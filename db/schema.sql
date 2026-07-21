@@ -1,0 +1,63 @@
+CREATE TABLE IF NOT EXISTS accounts (
+    id            TEXT PRIMARY KEY,
+    org_name      TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    currency      TEXT NOT NULL DEFAULT 'USD',
+    last_balance  NUMERIC(14, 2),
+    balance_date  TIMESTAMPTZ,
+    -- checking | savings | credit_card | loan; not provided by SimpleFIN, set manually
+    account_type  TEXT,
+    -- annual percentage rate for credit_card/loan accounts; not provided by SimpleFIN, set manually
+    apr           NUMERIC(5, 2),
+    -- if apr is a promo/balance-transfer rate, when it reverts to post_promo_apr
+    promo_apr_expires  DATE,
+    post_promo_apr     NUMERIC(5, 2),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id          TEXT PRIMARY KEY,
+    account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    posted      TIMESTAMPTZ NOT NULL,
+    amount      NUMERIC(14, 2) NOT NULL,
+    description TEXT,
+    pending     BOOLEAN NOT NULL DEFAULT false,
+    -- e.g. income:paycheck, income:uber, expense:rent, expense:debt_payment; set by category_rules
+    category    TEXT,
+    raw         JSONB,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactions_account_posted
+    ON transactions (account_id, posted DESC);
+
+-- One row per account per sync run, so balances over time (net worth trend) are queryable.
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id          BIGSERIAL PRIMARY KEY,
+    account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    balance     NUMERIC(14, 2) NOT NULL,
+    as_of       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_account_as_of
+    ON balance_snapshots (account_id, as_of DESC);
+
+-- Description substring -> category, applied by scripts/sync.py on every upsert.
+-- Higher priority wins when multiple patterns match the same description.
+CREATE TABLE IF NOT EXISTS category_rules (
+    id        SERIAL PRIMARY KEY,
+    pattern   TEXT NOT NULL,
+    category  TEXT NOT NULL,
+    priority  INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+    id                 SERIAL PRIMARY KEY,
+    name               TEXT NOT NULL,
+    target_amount      NUMERIC(14, 2) NOT NULL,
+    target_date        DATE,
+    -- progress is tracked as this account's balance minus starting_amount
+    linked_account_id  TEXT REFERENCES accounts(id),
+    starting_amount    NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
