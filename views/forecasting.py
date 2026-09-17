@@ -2,15 +2,16 @@
 
 Run with: .venv/bin/streamlit run app.py
 """
+import html
 from datetime import date
 
-import matplotlib.pyplot as plt
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+import ui
 from finance_data import load_accounts, load_goals, load_monthly_discretionary, load_recent_by_category
 
-st.set_page_config(page_title="Finance command center", layout="wide")
 
 # Used when the current employer has too few deposits on record to measure a pay cycle.
 # Weekly matches the current pay schedule; change it if that stops being true.
@@ -102,26 +103,32 @@ monthly_income = paycheck_amount * paycheck_per_year / 12 + uber_avg * uber_per_
 fixed_obligations = rent + family_payment + car_loan + student_loan
 base_net = monthly_income - fixed_obligations - discretionary
 
-# ---------- KPI row ----------
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Net worth", f"${net_worth:,.0f}")
-c2.metric("Total debt", f"${total_debt:,.0f}")
-c3.metric("Monthly income", f"${monthly_income:,.0f}")
-c4.metric("Net cash flow", f"${base_net:,.0f}", delta=f"{'surplus' if base_net >= 0 else 'deficit'}")
-
+# ---------- Headline tiles ----------
 # Whichever account has a promotional APR ending soonest -- generic across any
 # balance-transfer or intro-APR card, not tied to a specific issuer.
 promo_accounts = accounts[accounts["promo_apr_expires"].notna()].copy()
 if not promo_accounts.empty:
     promo_accounts["days_left"] = promo_accounts["promo_apr_expires"].apply(lambda d: (d - date.today()).days)
     next_promo = promo_accounts.sort_values("days_left").iloc[0]
-    c5.metric(f"{next_promo['name']} 0% ends", f"{next_promo['days_left']} days")
+    promo_tile = ui.stat_tile(
+        "0% APR ends", f"{next_promo['days_left']} days",
+        f"{html.escape(next_promo['name'])}, {next_promo['promo_apr_expires'].strftime('%b %-d')}",
+    )
 else:
-    c5.metric("Promo APR deadline", "n/a")
+    promo_tile = ui.stat_tile("0% APR ends", "n/a", "No promotional rate on file")
 
-st.markdown("---")
+flow_class, flow_word = ("good", "▲ Surplus") if base_net >= 0 else ("bad", "▼ Deficit")
+ui.tile_row([
+    ui.stat_tile("Monthly income", ui.money(monthly_income), "Paychecks plus side gig"),
+    ui.stat_tile("Fixed bills", ui.money(fixed_obligations), "Rent, loans and family"),
+    ui.stat_tile("Card spending", ui.money(discretionary), "2-month average"),
+    ui.stat_tile("Net cash flow", ui.money(base_net), f'<span class="delta {flow_class}">{flow_word}</span> each month'),
+    ui.stat_tile("Total debt", ui.money(total_debt), f"Net worth {ui.money(net_worth)}"),
+    promo_tile,
+], min_width=150)
 
 # ---------- Debt focus + levers ----------
+ui.section_label("Debt payoff")
 debt_accounts = accounts[accounts["account_type"] == "credit_card"].copy()
 debt_accounts["has_deadline"] = debt_accounts["promo_apr_expires"].notna()
 debt_accounts = debt_accounts.sort_values(["has_deadline", "last_balance"], ascending=[False, True])
@@ -131,7 +138,7 @@ debt_options = {
     if row["last_balance"] < 0
 }
 left, right = st.columns([1, 2])
-with left:
+with left, st.container(border=True, key="card_levers"):
     focus_label = st.selectbox("Focus payoff on", list(debt_options.keys()))
     focus_id = debt_options[focus_label]
     focus_row = accounts[accounts["id"] == focus_id].iloc[0]
@@ -139,64 +146,86 @@ with left:
     focus_deadline = focus_row["promo_apr_expires"] if pd.notna(focus_row["promo_apr_expires"]) else None
 
     st.subheader("Levers")
-    cut = st.slider("Cut discretionary spending ($/mo)", 0, 2000, 0, step=25)
+    cut = st.slider("Cut card spending ($/mo)", 0, 2000, 0, step=25)
     side = st.slider("More side income ($/mo)", 0, 1500, 0, step=25)
     raise_ = st.slider("Raise / new job ($/mo)", 0, 1500, 0, step=25)
 
     toward_debt = max(0.0, base_net + cut + side + raise_)
-    st.metric("Toward selected debt", f"${toward_debt:,.0f}/mo")
+    st.markdown(
+        f'<div class="hero-label" style="margin-top:10px">Toward this debt</div>'
+        f'<div class="tile-value">{ui.money(toward_debt)}'
+        f'<span style="font-size:0.85rem;font-weight:400;color:{ui.INK_MUTED}"> per month</span></div>',
+        unsafe_allow_html=True,
+    )
 
-with right:
-    months = []
-    balance = focus_balance
-    m = 0
-    history = [balance]
+with right, st.container(border=True, key="card_payoff"):
+    history = [focus_balance]
     if toward_debt > 0:
-        while balance > 0.5 and m < 240:
-            m += 1
-            balance = max(0.0, balance - toward_debt)
-            history.append(balance)
-        payoff_date = pd.Timestamp.today() + pd.DateOffset(months=m)
+        while history[-1] > 0.5 and len(history) <= 240:
+            history.append(max(0.0, history[-1] - toward_debt))
+        payoff_date = pd.Timestamp.today() + pd.DateOffset(months=len(history) - 1)
     else:
         payoff_date = None
 
-    fig, ax = plt.subplots(figsize=(7, 3.5))
-    fig.patch.set_alpha(0)
-    ax.patch.set_alpha(0)
-    ax.plot(range(len(history)), history, color="#0F6E56" if toward_debt > 0 else "#E24B4A", linewidth=2)
+    deadline_month = None
     if focus_deadline:
         deadline_month = (focus_deadline.year - date.today().year) * 12 + (focus_deadline.month - date.today().month)
-        if 0 <= deadline_month <= len(history) + 12:
-            ax.axvline(deadline_month, color="#888780", linestyle="--", linewidth=1)
-            ax.text(deadline_month, max(history) * 0.95, " deadline", fontsize=9, color="#888780")
-    ax.set_xlabel("Months from now")
-    ax.set_ylabel("Balance ($)")
-    ax.spines[["top", "right"]].set_visible(False)
-    st.pyplot(fig, use_container_width=True)
 
-    if payoff_date is not None:
-        st.write(f"**Paid off by:** {payoff_date.strftime('%b %Y')}")
+    # Headline and status first: the chart supports the answer, it is not the answer.
+    st.subheader(f"Paying off {focus_row['name']}")
+    if payoff_date is None:
+        st.markdown('<div class="status"><span class="bad">✕ Never at this rate.</span> '
+                    'Nothing is left over to put toward it.</div>', unsafe_allow_html=True)
+    else:
+        status = f"Paid off by <b style=\"color:{ui.INK}\">{payoff_date.strftime('%B %Y')}</b>"
         if focus_deadline is not None:
             days_margin = (focus_deadline - payoff_date.date()).days
             if days_margin >= 0:
-                st.success(f"{days_margin} days ahead of the deadline")
+                status += f' <span class="good">✓ {days_margin} days ahead of the 0% deadline</span>'
             else:
-                st.error(f"{-days_margin} days past the deadline")
-    else:
-        st.write("**Paid off by:** never at this rate")
+                status += f' <span class="bad">✕ {-days_margin} days past the 0% deadline</span>'
+        st.markdown(f'<div class="status">{status}</div>', unsafe_allow_html=True)
 
-st.markdown("---")
+    months_shown = max(len(history) - 1, deadline_month or 0, 6)
+    balance_path = pd.DataFrame({
+        "month": range(len(history)),
+        "balance": history,
+        "date": [(pd.Timestamp.today() + pd.DateOffset(months=i)).strftime("%b %Y") for i in range(len(history))],
+    })
+    x = alt.X("month:Q", title="Months from now", scale=alt.Scale(domain=[0, months_shown], nice=False),
+              axis=alt.Axis(grid=False, tickMinStep=1, tickCount=8))
+    y = alt.Y("balance:Q", title=None, scale=alt.Scale(domain=[0, focus_balance * 1.08], nice=False),
+              axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False))
+    tooltip = [alt.Tooltip("date:N", title="Month"), alt.Tooltip("balance:Q", title="Balance left", format="$,.0f")]
+    path = alt.Chart(balance_path)
+    layers = [
+        path.mark_area(color=ui.ACCENT, opacity=0.10).encode(x=x, y=y),
+        path.mark_line(color=ui.ACCENT, strokeWidth=2, strokeJoin="round").encode(x=x, y=y, tooltip=tooltip),
+        path.mark_point(size=500, opacity=0).encode(x=x, y=y, tooltip=tooltip),  # generous hover targets
+        alt.Chart(balance_path.tail(1)).mark_point(
+            size=80, filled=True, opacity=1, color=ui.ACCENT, stroke=ui.SURFACE, strokeWidth=2).encode(x=x, y=y),
+    ]
+    if deadline_month is not None and 0 <= deadline_month <= months_shown:
+        mark = pd.DataFrame({"month": [deadline_month], "label": ["0% APR ends"]})
+        layers.append(alt.Chart(mark).mark_rule(color=ui.WARNING, strokeWidth=1.5).encode(x="month:Q"))
+        layers.append(alt.Chart(mark).mark_text(
+            align="right" if deadline_month > months_shown * 0.75 else "left",
+            dx=-6 if deadline_month > months_shown * 0.75 else 6,
+            baseline="top", fontSize=12, color=ui.INK_SECONDARY,
+        ).encode(x="month:Q", y=alt.value(4), text="label:N"))
+    ui.show_chart(alt.layer(*layers), height=300)
 
 # ---------- Goals ----------
-st.subheader("Savings goals")
+ui.section_label("Savings goals")
 goals = load_goals()
-if goals.empty:
-    st.caption("No goals yet — add one with `python scripts/add_goal.py \"Name\" amount --account <id>`.")
-else:
-    for _, g in goals.iterrows():
-        progress = (g["last_balance"] or 0) - g["starting_amount"]
-        pct = max(0.0, min(1.0, progress / g["target_amount"])) if g["target_amount"] else 0
-        st.write(f"{g['name']}: ${progress:,.0f} / ${g['target_amount']:,.0f}")
-        st.progress(pct)
+with st.container(border=True, key="card_goals"):
+    if goals.empty:
+        st.caption("No goals yet. Add one with `python scripts/add_goal.py \"Name\" amount --account <id>`.")
+    else:
+        for _, g in goals.iterrows():
+            progress = (g["last_balance"] or 0) - g["starting_amount"]
+            pct = max(0.0, min(1.0, progress / g["target_amount"])) if g["target_amount"] else 0
+            st.write(f"{g['name']}: {ui.money(progress)} of {ui.money(g['target_amount'])}")
+            st.progress(pct)
 
 st.caption("Data refreshes every 5 minutes from the local Postgres database, synced daily via scripts/sync.py.")

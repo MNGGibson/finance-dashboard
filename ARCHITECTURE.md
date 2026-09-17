@@ -98,7 +98,7 @@ erDiagram
 
 **Cash on hand is a monthly snapshot, not always today's live balance.** The Overview page lets you pick any past month. If "cash on hand" always showed today's number regardless of which month was selected, every past month would lie. Instead it picks the daily sync closest to the 15th of whichever month is selected, and shows "n/a" honestly for months before tracking started rather than fabricating a number.
 
-**One filter state drives every visual (`kpi_filter` in `app.py`).** Click "Bills" and the category chart, the account table, and the transaction list all filter from the *same* computed subset — not five independent filters that can drift out of sync. Totals are printed under each visual specifically so they can be eyeballed against each other and against the KPI itself.
+**One filter state drives every visual (the `Show` control in `views/overview.py`).** Click "Bills" and the category chart, the account list, and the transaction list all filter from the *same* computed subset — not five independent filters that can drift out of sync. Totals are printed under each visual specifically so they can be eyeballed against each other and against the KPI itself.
 
 **Spending, Bills, and Income are mutually exclusive by design.** A credit card payment is a required outflow, not a discretionary purchase — conflating the two would make "Spending" mean nothing. `bill:*` (rent, loans, card payments, fees) and `spending:discretionary` (everything else charged) are deliberately separate categories so each KPI answers one specific question.
 

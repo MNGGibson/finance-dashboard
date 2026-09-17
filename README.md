@@ -66,10 +66,10 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Opens at http://localhost:8501.
+Opens at http://localhost:8501. `app.py` handles page setup and navigation; the pages live in `views/`, and `ui.py` holds the shared design tokens, stat tiles, and chart styling. Theme colours are in `.streamlit/config.toml`.
 
-- **Overview** (landing page) — KPI row (net worth, cash on hand as a monthly snapshot, total debt, income/bills/spending for the selected month). Click **Details** under any KPI and every chart/table on the page cross-filters to match, with totals that reconcile exactly.
-- **Forecasting** — sidebar assumptions pre-filled from your synced data (editable), a debt-focus selector, and three levers (cut spending / more side income / raise) that live-recompute a payoff projection against the account's real balance and any promotional-APR deadline.
+- **Overview** (landing page) — net worth as the lead number with an assets-versus-debt bar, then a row of tiles for the selected month (income, bills, spending, what is left for debt and savings, spending per day), each compared with the same stretch of the previous month. The **Show** control cross-filters the category chart, account list, and transactions together, with totals that reconcile exactly. Trend charts cover spending pace, monthly cash flow, and spending per day.
+- **Forecasting** — sidebar assumptions pre-filled from your synced data (editable, including pay schedule and fixed bills), a debt-focus selector, and three levers (cut spending / more side income / raise) that live-recompute a payoff projection against the account's real balance and any promotional-APR deadline.
 
 Manage savings goals and card APRs from the CLI (Metabase has no easy write-back form for this):
 
