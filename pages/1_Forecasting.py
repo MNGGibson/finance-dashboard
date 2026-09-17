@@ -12,6 +12,54 @@ from finance_data import load_accounts, load_goals, load_monthly_discretionary, 
 
 st.set_page_config(page_title="Finance command center", layout="wide")
 
+# Used when the current employer has too few deposits on record to measure a pay cycle.
+# Weekly matches the current pay schedule; change it if that stops being true.
+FALLBACK_PAYCHECKS_PER_YEAR = 52
+PAY_SCHEDULES = {52: "weekly", 26: "every two weeks", 24: "twice a month", 12: "monthly"}
+
+
+def infer_pay_frequency(paychecks):
+    """Paychecks per year for the employer behind the most recent paycheck.
+
+    `paychecks` is newest-first with `posted` and `description`. Only deposits from the
+    same payer as the latest one are used, so a job change switches the schedule as soon
+    as the new employer's first deposit lands rather than blending the two.
+    """
+    if paychecks.empty:
+        return FALLBACK_PAYCHECKS_PER_YEAR, "No paychecks synced yet. Assuming weekly."
+    # Banks prefix the payer differently over time ("ACH: X", "Direct Deposit: X", "X").
+    payer = paychecks["description"].fillna("").str.split(": ").str[-1].str.strip().str.upper()
+    same_payer = paychecks[payer == payer.iloc[0]]
+    name = payer.iloc[0]
+    if len(same_payer) < 2:
+        return FALLBACK_PAYCHECKS_PER_YEAR, f"Only one deposit from {name} so far. Assuming weekly."
+    gap_days = pd.to_datetime(same_payer["posted"]).sort_values().diff().dt.days.dropna().median()
+    per_year = min(PAY_SCHEDULES, key=lambda n: abs(365.25 / n - gap_days))
+    return per_year, f"{name} pays {PAY_SCHEDULES[per_year]}, based on {len(same_payer)} deposits."
+
+
+# A payee with no payment in this many days is treated as ended (two monthly cycles).
+BILL_ACTIVE_DAYS = 62
+
+
+def estimate_monthly_bill(category):
+    """Monthly cost of a fixed bill: the latest payment to each payee still being paid.
+
+    Calendar-month totals mislead for these bills. Rent posts on either side of a month
+    boundary, and one-off charges or a doubled payment would skew an average. Each payee
+    is assumed to bill monthly, which holds for rent, loans and the family payment.
+    """
+    txns = load_recent_by_category(category, 24)
+    if txns.empty:
+        return 0.0
+    posted = pd.to_datetime(txns["posted"], utc=True).dt.tz_localize(None)
+    txns = txns[posted >= pd.Timestamp.today() - pd.Timedelta(days=BILL_ACTIVE_DAYS)]
+    # Same payee normalisation as paychecks: banks vary the prefix ("ACH: X", "Zelle: X").
+    payee = txns["description"].fillna("").str.split(": ").str[-1].str.strip().str.upper()
+    latest_per_payee = txns.groupby(payee)["amount"].first()  # frame is newest-first
+    return float(-latest_per_payee.sum())
+
+
 accounts = load_accounts()
 net_worth = accounts["last_balance"].sum()
 total_debt = -accounts.loc[accounts["last_balance"] < 0, "last_balance"].sum()
@@ -22,10 +70,12 @@ st.title("Forecasting")
 st.sidebar.header("Assumptions")
 st.sidebar.caption("Pre-filled from synced data. Adjust anything that looks stale.")
 
-paycheck_recent = load_recent_by_category("income:paycheck", 1)
+paycheck_recent = load_recent_by_category("income:paycheck", 12)
 paycheck_default = float(paycheck_recent["amount"].iloc[0]) if not paycheck_recent.empty else 0.0
 paycheck_amount = st.sidebar.number_input("Paycheck amount", value=round(paycheck_default, 2), step=25.0)
-paycheck_per_year = st.sidebar.number_input("Paychecks per year", value=26, step=1)
+frequency_default, frequency_note = infer_pay_frequency(paycheck_recent)
+paycheck_per_year = st.sidebar.number_input("Paychecks per year", value=frequency_default, step=1)
+st.sidebar.caption(frequency_note)
 
 uber_recent = load_recent_by_category("income:uber", 10)
 uber_default = float(uber_recent["amount"].mean()) if not uber_recent.empty else 0.0
@@ -33,10 +83,11 @@ uber_avg = st.sidebar.number_input("Side-gig avg per payout", value=round(uber_d
 uber_per_year = st.sidebar.number_input("Side-gig payouts per year", value=52, step=1)
 
 st.sidebar.markdown("---")
-rent = st.sidebar.number_input("Rent", value=0.0, step=25.0)
-family_payment = st.sidebar.number_input("Family payment", value=0.0, step=10.0)
-car_loan = st.sidebar.number_input("Car loan", value=0.0, step=10.0)
-student_loan = st.sidebar.number_input("Student loan", value=0.0, step=10.0)
+rent = st.sidebar.number_input("Rent", value=round(estimate_monthly_bill("bill:rent"), 2), step=25.0)
+family_payment = st.sidebar.number_input("Family payment", value=round(estimate_monthly_bill("bill:family"), 2), step=10.0)
+car_loan = st.sidebar.number_input("Car loan", value=round(estimate_monthly_bill("bill:car_loan"), 2), step=10.0)
+student_loan = st.sidebar.number_input("Student loan", value=round(estimate_monthly_bill("bill:student_loan"), 2), step=10.0)
+st.sidebar.caption(f"Each is the latest payment to every payee paid in the last {BILL_ACTIVE_DAYS} days.")
 
 st.sidebar.markdown("---")
 disc_monthly = load_monthly_discretionary()

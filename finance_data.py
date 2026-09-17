@@ -84,6 +84,20 @@ def load_transactions(months=12):
     return df
 
 
+def income_mask(txns):
+    """Boolean mask of the rows in a load_transactions() frame that count as income.
+
+    The single definition of income for the app: money arriving in a non-credit-card
+    account that isn't a transfer. Positive amounts on credit cards are payments
+    received, statement credits and points redemptions -- not income.
+    """
+    return (
+        (txns["amount"] > 0)
+        & (txns["account_type"] != "credit_card")
+        & ~txns["category"].str.startswith("transfer:", na=False)
+    )
+
+
 @st.cache_data(ttl=300)
 def load_balance_history():
     conn = get_conn()

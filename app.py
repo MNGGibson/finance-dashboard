@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-from finance_data import cash_on_hand_for_month, load_accounts, load_transactions
+from finance_data import cash_on_hand_for_month, income_mask, load_accounts, load_transactions
 
 st.set_page_config(page_title="Overview", layout="wide")
 
@@ -86,7 +86,7 @@ selected_month = st.selectbox(
 )
 month_txns = transactions[transactions["month"] == selected_month]
 
-month_income = month_txns.loc[month_txns["amount"] > 0, "amount"].sum()
+month_income = month_txns.loc[income_mask(month_txns), "amount"].sum()
 month_spending = -month_txns.loc[month_txns["category"] == "spending:discretionary", "amount"].sum()
 month_bills = -month_txns.loc[month_txns["category"].str.startswith("bill:", na=False), "amount"].sum()
 
@@ -131,7 +131,7 @@ fc1.caption(f"Showing: **{filter_names[kpi_filter]}**")
 # ---------- Single source of truth: every visual below filters off this ----------
 filtered_txns = month_txns.copy()
 if kpi_filter == "income":
-    filtered_txns = filtered_txns[filtered_txns["amount"] > 0]
+    filtered_txns = filtered_txns[income_mask(filtered_txns)]
 elif kpi_filter == "bills":
     filtered_txns = filtered_txns[filtered_txns["category"].str.startswith("bill:", na=False)]
 elif kpi_filter == "spending":
@@ -156,7 +156,7 @@ left, right = st.columns([1, 1])
 
 with left:
     chart_config = {
-        "income": ("Income by source", filtered_txns[filtered_txns["amount"] > 0], "#639922"),
+        "income": ("Income by source", filtered_txns[income_mask(filtered_txns)], "#639922"),
         "bills": ("Bills by type", filtered_txns[filtered_txns["category"].str.startswith("bill:", na=False)], "#D85A30"),
         "spending": ("Spending by category", filtered_txns[filtered_txns["category"] == "spending:discretionary"], "#378ADD"),
     }
