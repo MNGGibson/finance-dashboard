@@ -1,4 +1,4 @@
-"""Entry point: shared page setup and navigation. The pages themselves live in views/.
+"""Entry point: shared page setup. The dashboard itself lives in views/overview.py.
 
 Run with: .venv/bin/streamlit run app.py
 """
@@ -6,10 +6,11 @@ import streamlit as st
 
 import ui
 
-st.set_page_config(page_title="Finance dashboard", page_icon=":material/account_balance_wallet:", layout="wide")
+st.set_page_config(
+    page_title="Finance dashboard", page_icon=":material/account_balance_wallet:",
+    layout="wide", initial_sidebar_state="collapsed",
+)
 ui.apply_page_style()
 
-st.navigation([
-    st.Page("views/overview.py", title="Overview", icon=":material/space_dashboard:", default=True),
-    st.Page("views/forecasting.py", title="Forecasting", icon=":material/trending_up:", url_path="Forecasting"),
-]).run()
+# A single page, so the navigation menu is hidden rather than listing one item.
+st.navigation([st.Page("views/overview.py", title="Overview", default=True)], position="hidden").run()

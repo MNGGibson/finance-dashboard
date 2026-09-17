@@ -7,18 +7,32 @@ import pandas as pd
 import streamlit as st
 
 import ui
+from merchants import add_merchants
 from finance_data import cash_on_hand_for_month, income_mask, load_accounts, load_balance_history, load_transactions
 
-FILTERS = ["All", "Cash", "Debt", "Income", "Bills", "Spending"]
+FILTERS = ["All", "Income", "Bills", "Spending", "Card payments", "Cash", "Debt"]
 CASH_TYPES = ["checking", "savings"]
 
 
+CARD_PAYMENT = "bill:debt_payment"
+
+
+def is_card_payment(txns):
+    return txns["category"] == CARD_PAYMENT
+
+
 def is_bill(txns):
-    return txns["category"].str.startswith("bill:", na=False)
+    """Fixed bills paid from cash. Card payments are tracked separately: they settle
+    card spending that is already counted, so adding both would count dollars twice."""
+    return txns["category"].str.startswith("bill:", na=False) & ~is_card_payment(txns)
 
 
 def is_spending(txns):
     return txns["category"] == "spending:discretionary"
+
+
+def is_transfer(txns):
+    return txns["category"].str.startswith("transfer:", na=False)
 
 
 def month_totals(txns):
@@ -28,16 +42,14 @@ def month_totals(txns):
     return income, bills, spending
 
 
-def left_for_debt(txns):
-    """Income minus living costs, before any debt payments.
-
-    Debt payments are left out on purpose: a card payment settles spending that is
-    already counted, so subtracting both would count the same dollars twice. This is
-    the same quantity the Forecasting page calls net cash flow.
-    """
-    income, bills, spending = month_totals(txns)
-    debt_payments = -txns.loc[txns["category"] == "bill:debt_payment", "amount"].sum()
-    return income - (bills - debt_payments) - spending
+def effective_date(txns):
+    """The date a transaction counts toward. Rent is due on the 1st but often leaves the
+    bank a day or two early, which would give one month two rents and the next month
+    none. Rent posted in the last three days of a month counts for the month it pays for."""
+    posted = txns["posted"]
+    early_rent = (txns["category"] == "bill:rent") & (posted.dt.days_in_month - posted.dt.day < 3)
+    next_month_start = (posted + pd.offsets.MonthBegin(1)).dt.normalize()
+    return posted.where(~early_rent, next_month_start)
 
 
 def category_label(category):
@@ -67,7 +79,8 @@ def net_worth_as_of(history, cutoff):
 # ---------- Data ----------
 accounts = load_accounts()
 transactions = load_transactions(months=12)
-transactions["month"] = transactions["posted"].dt.to_period("M")
+transactions["effective"] = effective_date(transactions)
+transactions["month"] = transactions["effective"].dt.to_period("M")
 
 today = pd.Timestamp.today().normalize()
 available_months = sorted(transactions["month"].unique(), reverse=True)
@@ -125,7 +138,7 @@ prev_txns = transactions[transactions["month"] == prev_month]
 is_current_month = selected_month == today.to_period("M")
 if is_current_month:
     # A partial month against a full one always looks like a win; compare like with like.
-    prev_txns = prev_txns[prev_txns["posted"].dt.day <= today.day]
+    prev_txns = prev_txns[prev_txns["effective"].dt.day <= today.day]
     versus = f"{prev_month.strftime('%b')} 1–{today.day}"
 else:
     versus = prev_month.strftime("%B")
@@ -133,19 +146,22 @@ has_prev = not prev_txns.empty
 
 income, bills, spending = month_totals(month_txns)
 p_income, p_bills, p_spending = month_totals(prev_txns) if has_prev else (None, None, None)
-left_over = left_for_debt(month_txns)
-p_left_over = left_for_debt(prev_txns) if has_prev else None
-per_day = spending / days_counted(selected_month)
-p_per_day = p_spending / (today.day if is_current_month else prev_month.days_in_month) if has_prev else None
+# The first three tiles add up to the fourth, so the row can be checked at a glance.
+left_over = income - bills - spending
+p_left_over = p_income - p_bills - p_spending if has_prev else None
+paid_to_cards = -month_txns.loc[is_card_payment(month_txns), "amount"].sum()
+p_paid_to_cards = -prev_txns.loc[is_card_payment(prev_txns), "amount"].sum() if has_prev else None
 
 ui.section_label(month_name)
 ui.tile_row([
     ui.stat_tile("Income", ui.money(income), ui.delta_html(income, p_income, True, versus)),
     ui.stat_tile("Bills", ui.money(bills), ui.delta_html(bills, p_bills, False, versus)),
-    ui.stat_tile("Spending", ui.money(spending), ui.delta_html(spending, p_spending, False, versus)),
+    ui.stat_tile("Card spending", ui.money(spending), ui.delta_html(spending, p_spending, False, versus)),
     ui.stat_tile("Left for debt and savings", ui.money(left_over), ui.delta_html(left_over, p_left_over, True, versus)),
-    ui.stat_tile("Spending per day", ui.money(per_day, cents=True), ui.delta_html(per_day, p_per_day, False, versus)),
+    ui.stat_tile("Paid to cards", ui.money(paid_to_cards), ui.delta_html(paid_to_cards, p_paid_to_cards, None, versus)),
 ])
+st.caption("Income minus bills minus card spending is what is left. Card payments are shown apart "
+           "because they pay for spending that is already counted.")
 
 # ---------- Cross-filter: one control, every visual below follows it ----------
 st.write("")
@@ -159,69 +175,80 @@ elif choice == "Bills":
     filtered_txns = month_txns[is_bill(month_txns)]
 elif choice == "Spending":
     filtered_txns = month_txns[is_spending(month_txns)]
+elif choice == "Card payments":
+    filtered_txns = month_txns[is_card_payment(month_txns)]
 elif choice == "Cash":
     filtered_txns = month_txns[month_txns["account_type"].isin(CASH_TYPES)]
     filtered_accounts = accounts[accounts["account_type"].isin(CASH_TYPES)]
 elif choice == "Debt":
     filtered_txns = month_txns[month_txns["account_type"] == "credit_card"]
     filtered_accounts = accounts[accounts["account_type"] == "credit_card"]
-if choice in ("Income", "Bills", "Spending"):
+if choice in ("Income", "Bills", "Spending", "Card payments"):
     filtered_accounts = accounts[accounts["name"].isin(filtered_txns["account_name"].unique())]
 
 chart_col, accounts_col = st.columns([3, 2])
 
-with chart_col, st.container(border=True, key="card_categories"):
-    if choice == "Income":
-        heading, cat_subset = "Income by source", filtered_txns
-    else:
-        heading = {"Bills": "Bills by type", "Spending": "Spending by category"}.get(choice, "Where the money went")
-        # Transfers (points redemptions and the like) net to zero, so they are not outflows.
-        cat_subset = filtered_txns[(filtered_txns["amount"] < 0)
-                                   & ~filtered_txns["category"].str.startswith("transfer:", na=False)]
-    by_cat = (
-        cat_subset.assign(label=cat_subset["category"].map(category_label))
-        .groupby("label")["amount"].sum().abs().sort_values(ascending=False).reset_index()
+def ranked_bars(ranked, label_title):
+    """Horizontal bars, largest first, value at the tip. `ranked` has `label` and `amount`."""
+    base = alt.Chart(ranked).encode(
+        y=alt.Y("label:N", sort=list(ranked["label"]), title=None,
+                axis=alt.Axis(ticks=False, domain=False, labelLimit=170, labelFontSize=13,
+                              labelColor=ui.INK_SECONDARY, labelPadding=10)),
+        x=alt.X("amount:Q", axis=None, scale=alt.Scale(domain=[0, ranked["amount"].max() * 1.2])),
+        tooltip=[alt.Tooltip("label:N", title=label_title), alt.Tooltip("amount:Q", title="Amount", format="$,.2f"),
+                 alt.Tooltip("count:Q", title="Transactions")],
     )
-    st.subheader(heading)
+    # The "N others" remainder is context, not a merchant, so it does not get the accent.
+    bars = base.mark_bar(size=18, cornerRadiusEnd=4).encode(
+        color=alt.condition(alt.datum.is_rest, alt.value(ui.DEEMPHASIS), alt.value(ui.ACCENT)))
+    values = base.mark_text(align="left", dx=7, fontSize=12, color=ui.INK_SECONDARY).encode(
+        text=alt.Text("amount:Q", format="$,.0f"))
+    ui.show_chart(bars + values, height=34 * len(ranked) + 8)
+
+
+def rank_by(txns, column, keep=None):
+    ranked = (txns.groupby(column)["amount"].agg(amount=lambda a: abs(a.sum()), count="size")
+              .sort_values("amount", ascending=False).reset_index().rename(columns={column: "label"}))
+    ranked["is_rest"] = False
+    if keep is not None and len(ranked) > keep:
+        rest = ranked.iloc[keep:]
+        ranked = pd.concat([ranked.iloc[:keep], pd.DataFrame({
+            "label": [f"{len(rest)} others"], "amount": [rest["amount"].sum()],
+            "count": [rest["count"].sum()], "is_rest": [True]})])
+    return ranked
+
+
+if choice == "Income":
+    flow_subset = filtered_txns
+else:
+    # Money going out. Transfers net to zero, and card payments settle spending that is
+    # already counted, so neither is an outflow unless card payments are what you asked for.
+    flow_subset = filtered_txns[(filtered_txns["amount"] < 0) & ~is_transfer(filtered_txns)]
+    if choice != "Card payments":
+        flow_subset = flow_subset[~is_card_payment(flow_subset)]
+
+with chart_col, st.container(border=True, key="card_categories"):
+    st.subheader({"Income": "Income by source", "Bills": "Bills by type", "Spending": "Spending by category",
+                  "Card payments": "Card payments"}.get(choice, "Where the money went"))
+    by_cat = rank_by(flow_subset.assign(label=flow_subset["category"].map(category_label)), "label")
     if by_cat.empty:
         st.caption("Nothing to show for this view.")
     else:
-        st.caption(f"{ui.money(by_cat['amount'].sum())} across {len(by_cat)} categories, {month_name}")
-        base = alt.Chart(by_cat).encode(
-            y=alt.Y("label:N", sort="-x", title=None,
-                    axis=alt.Axis(ticks=False, domain=False, labelLimit=170, labelFontSize=13,
-                                  labelColor=ui.INK_SECONDARY, labelPadding=10)),
-            x=alt.X("amount:Q", axis=None, scale=alt.Scale(domain=[0, by_cat["amount"].max() * 1.2])),
-            tooltip=[alt.Tooltip("label:N", title="Category"), alt.Tooltip("amount:Q", title="Amount", format="$,.2f")],
-        )
-        bars = base.mark_bar(size=18, cornerRadiusEnd=4, color=ui.ACCENT)
-        values = base.mark_text(align="left", dx=7, fontSize=12, color=ui.INK_SECONDARY).encode(
-            text=alt.Text("amount:Q", format="$,.0f"))
-        ui.show_chart(bars + values, height=34 * len(by_cat) + 8)
+        noun = "category" if len(by_cat) == 1 else "categories"
+        st.caption(f"{ui.money(by_cat['amount'].sum())} across {len(by_cat)} {noun}, {month_name}")
+        ranked_bars(by_cat, "Category")
 
-with chart_col, st.container(border=True, key="card_flow"):
-    st.subheader("Monthly cash flow")
-    st.caption(f"{month_name} highlighted")
-    recent = [m for m in sorted(available_months)][-6:]
-    flow_rows = []
-    for m in recent:
-        m_income, m_bills, m_spending = month_totals(transactions[transactions["month"] == m])
-        for kind, amount in (("Income", m_income), ("Bills", m_bills), ("Spending", m_spending)):
-            flow_rows.append({"month": m.strftime("%b"), "kind": kind, "amount": amount, "selected": m == selected_month})
-    flow = pd.DataFrame(flow_rows)
-    kinds = ["Income", "Bills", "Spending"]
-    flow_chart = alt.Chart(flow).mark_bar(cornerRadiusEnd=3).encode(
-        x=alt.X("month:N", sort=[m.strftime("%b") for m in recent], title=None,
-                axis=alt.Axis(labelAngle=0, ticks=False), scale=alt.Scale(paddingInner=0.25)),
-        xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
-        y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
-        color=alt.Color("kind:N", sort=kinds, scale=alt.Scale(
-            domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]])),
-        opacity=alt.condition(alt.datum.selected, alt.value(1), alt.value(0.4)),
-        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("kind:N", title="Type"),
-                 alt.Tooltip("amount:Q", title="Amount", format="$,.0f")],
-    )
-    ui.show_chart(flow_chart, height=250)
+with chart_col, st.container(border=True, key="card_merchants"):
+    st.subheader("Who paid you" if choice == "Income" else "Where you spent it")
+    if flow_subset.empty:
+        st.caption("Nothing to show for this view.")
+    else:
+        # Rent alone would flatten every other bar, and the chart above already covers bills.
+        merchant_subset = flow_subset[~is_bill(flow_subset)] if choice == "All" else flow_subset
+        by_merchant = rank_by(add_merchants(merchant_subset, transactions["description"]), "merchant", keep=8)
+        scope = "Everyday spending, bills left out. " if choice == "All" else ""
+        st.caption(f"{scope}Names are cleaned up from bank descriptions, so grouping is approximate.")
+        ranked_bars(by_merchant, "Merchant")
 
 with accounts_col, st.container(border=True, key="card_accounts"):
     st.subheader("Accounts")
@@ -254,7 +281,7 @@ with accounts_col, st.container(border=True, key="card_accounts"):
 
 # ---------- Trends (always card spending and whole months; not narrowed by the filter) ----------
 ui.section_label("Trends")
-pace_col, daily_col = st.columns(2)
+pace_col, flow_col, daily_col = st.columns(3)
 
 spend_all = transactions[is_spending(transactions)]
 
@@ -288,6 +315,30 @@ with pace_col, st.container(border=True, key="card_pace"):
         dots = alt.Chart(ends).mark_point(size=70, filled=True, opacity=1, stroke=ui.SURFACE, strokeWidth=2).encode(
             x="day:Q", y="spent:Q", color=colour)
         ui.show_chart(lines + dots, height=230)
+
+with flow_col, st.container(border=True, key="card_flow"):
+    st.subheader("Monthly cash flow")
+    st.caption(f"{month_name} highlighted")
+    recent = [m for m in sorted(available_months)][-6:]
+    flow_rows = []
+    for m in recent:
+        m_income, m_bills, m_spending = month_totals(transactions[transactions["month"] == m])
+        for kind, amount in (("Income", m_income), ("Bills", m_bills), ("Spending", m_spending)):
+            flow_rows.append({"month": m.strftime("%b"), "kind": kind, "amount": amount, "selected": m == selected_month})
+    flow = pd.DataFrame(flow_rows)
+    kinds = ["Income", "Bills", "Spending"]
+    flow_chart = alt.Chart(flow).mark_bar(cornerRadiusEnd=3).encode(
+        x=alt.X("month:N", sort=[m.strftime("%b") for m in recent], title=None,
+                axis=alt.Axis(labelAngle=0, ticks=False), scale=alt.Scale(paddingInner=0.25)),
+        xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
+        y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
+        color=alt.Color("kind:N", sort=kinds, scale=alt.Scale(
+            domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]])),
+        opacity=alt.condition(alt.datum.selected, alt.value(1), alt.value(0.4)),
+        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("kind:N", title="Type"),
+                 alt.Tooltip("amount:Q", title="Amount", format="$,.0f")],
+    )
+    ui.show_chart(flow_chart, height=230)
 
 with daily_col, st.container(border=True, key="card_daily"):
     st.subheader("Spending per day")

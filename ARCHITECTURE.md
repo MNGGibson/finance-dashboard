@@ -34,7 +34,7 @@ Every transaction description is matched against substring rules in `category_ru
 Chosen over SQLite specifically because Metabase's SQLite support is a community-maintained driver, not first-class — Postgres is the standard pairing and avoids that friction entirely. Runs in Docker, data lives in a named volume (never in the repo).
 
 **Presentation — Streamlit app**
-Metabase (and BI tools generally) can show and filter *stored* data, but can't run a live calculator where dragging a slider recomputes something in real time — that's outside the category of tool. The Overview and Forecasting pages exist specifically for the parts that needed that: cross-filtering KPIs where every chart/table reconciles to the number you clicked, and a payoff simulator that recomputes against real account balances and promotional-APR deadlines as you adjust income/spending assumptions.
+Metabase (and BI tools generally) can show and filter *stored* data, but can't cross-filter a whole page from one control so that every chart, list and table reconciles to the number you picked, or compare a partial month against the same stretch of the previous one. The dashboard exists for that. An earlier debt-payoff forecasting page was removed as not useful in practice; it is preserved on the `forecasting-archive` branch.
 
 **Presentation — Metabase**
 Handles the plain reporting side: trend charts, filters, anything that's really just "query and visualize stored data." Also has a native-SQL card with dashboard-level number filters, which is the closest a BI tool gets to the same live lever the Streamlit app does — useful as a comparison point for what each tool is actually good at.

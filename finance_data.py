@@ -33,42 +33,6 @@ def load_accounts():
 
 
 @st.cache_data(ttl=300)
-def load_recent_by_category(category, limit=10):
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT posted, amount, description FROM transactions "
-        "WHERE category = %(cat)s ORDER BY posted DESC LIMIT %(lim)s",
-        conn, params={"cat": category, "lim": limit},
-    )
-    conn.close()
-    return df
-
-
-@st.cache_data(ttl=300)
-def load_monthly_discretionary():
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT date_trunc('month', posted) AS month, SUM(-amount) AS spend "
-        "FROM transactions WHERE category = 'spending:discretionary' "
-        "GROUP BY 1 ORDER BY 1", conn,
-    )
-    conn.close()
-    return df
-
-
-@st.cache_data(ttl=300)
-def load_goals():
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT g.name, g.target_amount, g.starting_amount, g.target_date, "
-        "a.last_balance, a.name AS account_name "
-        "FROM goals g LEFT JOIN accounts a ON a.id = g.linked_account_id", conn,
-    )
-    conn.close()
-    return df
-
-
-@st.cache_data(ttl=300)
 def load_transactions(months=12):
     conn = get_conn()
     df = pd.read_sql(

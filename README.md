@@ -2,7 +2,7 @@
 
 Pulls balances & transactions from linked bank accounts via [SimpleFIN](https://www.simplefin.org/) into local Postgres, auto-categorizes them into income/bills/discretionary spending, and surfaces two views on top:
 
-- **A Streamlit app** — an interactive planning tool with a live Overview (cross-filtering KPIs, spending by category, daily-spend trends) and a Forecasting page (debt payoff simulator with adjustable income/spending levers, tracks any promotional-APR deadline automatically)
+- **A Streamlit app** — a live dashboard with net worth, cross-filtering monthly KPIs, spending by category, spending trends, and promotional-APR deadlines flagged on the accounts that have them
 - **Metabase** — plain BI-style dashboards and trend charts on the same data
 
 Both read from the same Postgres database, kept up to date by a daily sync script.
@@ -66,17 +66,18 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Opens at http://localhost:8501. `app.py` handles page setup and navigation; the pages live in `views/`, and `ui.py` holds the shared design tokens, stat tiles, and chart styling. Theme colours are in `.streamlit/config.toml`.
+Opens at http://localhost:8501. `app.py` handles page setup; the dashboard lives in `views/overview.py`, and `ui.py` holds the shared design tokens, stat tiles, and chart styling. Theme colours are in `.streamlit/config.toml`.
 
-- **Overview** (landing page) — net worth as the lead number with an assets-versus-debt bar, then a row of tiles for the selected month (income, bills, spending, what is left for debt and savings, spending per day), each compared with the same stretch of the previous month. The **Show** control cross-filters the category chart, account list, and transactions together, with totals that reconcile exactly. Trend charts cover spending pace, monthly cash flow, and spending per day.
-- **Forecasting** — sidebar assumptions pre-filled from your synced data (editable, including pay schedule and fixed bills), a debt-focus selector, and three levers (cut spending / more side income / raise) that live-recompute a payoff projection against the account's real balance and any promotional-APR deadline.
+- **Dashboard** — net worth as the lead number with an assets-versus-debt bar, then a row of tiles for the selected month: income, bills, card spending, and what is left for debt and savings (the first three add up to the fourth), plus what was paid to cards. Each compares with the same stretch of the previous month. The **Show** control cross-filters the category chart, a top-merchants chart, the account list, and transactions together. Trend charts cover spending pace, monthly cash flow, and spending per day.
+
+Two rules keep the months honest. Card payments are shown apart from bills and outflows, because they settle card spending that is already counted. Rent posted in the last three days of a month counts toward the month it pays for. Merchant names are cleaned up from raw bank descriptions by `merchants.py`, a heuristic, so that grouping is approximate.
 
 Manage savings goals and card APRs from the CLI (Metabase has no easy write-back form for this):
 
 ```bash
 python scripts/add_goal.py --list-accounts             # find an account id to link a goal to
 python scripts/add_goal.py "Emergency fund" 5000 --account <id>
-python scripts/add_goal.py --list                       # see progress
+python scripts/add_goal.py --list                       # see progress (goals are CLI-only, not shown in the app)
 
 python scripts/set_apr.py --list                        # see current APRs
 python scripts/set_apr.py <account_id> 24.99             # set one

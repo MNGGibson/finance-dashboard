@@ -117,7 +117,8 @@ def delta_html(current, previous, up_is_good, versus):
     if abs(change) < 0.5:
         return f'<span class="delta flat">No change</span> vs {html.escape(versus)}'
     up = change > 0
-    tone = "good" if up == up_is_good else "bad"
+    # up_is_good=None: a change that is neither good nor bad in itself, so no verdict colour.
+    tone = "flat" if up_is_good is None else ("good" if up == up_is_good else "bad")
     arrow = "▲" if up else "▼"
     pct = abs(change) / abs(previous) * 100
     exact = f"{money(previous)} then, {money(current)} now"
