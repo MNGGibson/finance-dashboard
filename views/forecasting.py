@@ -1,4 +1,4 @@
-"""Forecasting page: debt payoff simulator + adjustable planning levers.
+"""Forecasting page: forward cash forecast, debt payoff simulator, and planning levers.
 
 Run with: .venv/bin/streamlit run app.py
 """
@@ -9,14 +9,17 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import forecast
 import ui
-from finance_data import load_accounts, load_goals, load_monthly_discretionary, load_recent_by_category
+from finance_data import (
+    load_accounts, load_goals, load_monthly_discretionary, load_recent_by_category, load_transactions,
+)
+from forecast import PAY_SCHEDULES, payee_key
 
 
 # Used when the current employer has too few deposits on record to measure a pay cycle.
 # Weekly matches the current pay schedule; change it if that stops being true.
 FALLBACK_PAYCHECKS_PER_YEAR = 52
-PAY_SCHEDULES = {52: "weekly", 26: "every two weeks", 24: "twice a month", 12: "monthly"}
 
 
 def infer_pay_frequency(paychecks):
@@ -28,19 +31,16 @@ def infer_pay_frequency(paychecks):
     """
     if paychecks.empty:
         return FALLBACK_PAYCHECKS_PER_YEAR, "No paychecks synced yet. Assuming weekly."
-    # Banks prefix the payer differently over time ("ACH: X", "Direct Deposit: X", "X").
-    payer = paychecks["description"].fillna("").str.split(": ").str[-1].str.strip().str.upper()
+    payer = payee_key(paychecks["description"])
     same_payer = paychecks[payer == payer.iloc[0]]
     name = payer.iloc[0]
     if len(same_payer) < 2:
         return FALLBACK_PAYCHECKS_PER_YEAR, f"Only one deposit from {name} so far. Assuming weekly."
-    gap_days = pd.to_datetime(same_payer["posted"]).sort_values().diff().dt.days.dropna().median()
-    per_year = min(PAY_SCHEDULES, key=lambda n: abs(365.25 / n - gap_days))
+    per_year = forecast.paychecks_per_year(same_payer["posted"])
     return per_year, f"{name} pays {PAY_SCHEDULES[per_year]}, based on {len(same_payer)} deposits."
 
 
-# A payee with no payment in this many days is treated as ended (two monthly cycles).
-BILL_ACTIVE_DAYS = 62
+BILL_ACTIVE_DAYS = forecast.ACTIVE_DAYS
 
 
 def estimate_monthly_bill(category):
@@ -55,9 +55,7 @@ def estimate_monthly_bill(category):
         return 0.0
     posted = pd.to_datetime(txns["posted"], utc=True).dt.tz_localize(None)
     txns = txns[posted >= pd.Timestamp.today() - pd.Timedelta(days=BILL_ACTIVE_DAYS)]
-    # Same payee normalisation as paychecks: banks vary the prefix ("ACH: X", "Zelle: X").
-    payee = txns["description"].fillna("").str.split(": ").str[-1].str.strip().str.upper()
-    latest_per_payee = txns.groupby(payee)["amount"].first()  # frame is newest-first
+    latest_per_payee = txns.groupby(payee_key(txns["description"]))["amount"].first()  # frame is newest-first
     return float(-latest_per_payee.sum())
 
 
@@ -99,6 +97,31 @@ disc_default = float(disc_full_months["spend"].tail(2).mean()) if len(disc_full_
 discretionary = st.sidebar.number_input("Discretionary spending (card)", value=round(disc_default, 2), step=50.0)
 st.sidebar.caption("Excludes the current in-progress month, which would understate this.")
 
+# ---------- Sidebar: what the cash forecast assumes ----------
+today = pd.Timestamp.today().normalize()
+all_txns = load_transactions(months=6)
+cash_txns = all_txns[all_txns["account_type"].isin(["checking", "savings"])]
+streams = forecast.income_streams(cash_txns, today)
+card_default, last_card_payment = forecast.card_payment_pattern(cash_txns, today)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Cash forecast")
+card_payments = st.sidebar.number_input("Card payments per month", value=round(card_default, 2), step=50.0)
+st.sidebar.caption("What actually leaves checking to pay cards, averaged over 90 days.")
+other_spending = st.sidebar.number_input(
+    "Other spending from checking", value=round(forecast.other_cash_spending(cash_txns, today), 2), step=25.0)
+st.sidebar.caption("Zelle and debit card spending with no schedule, per month.")
+
+paycheck_streams = streams[streams["category"] == "income:paycheck"].sort_values("last_date", ascending=False)
+# The newest payer is the job the inputs above describe. Any other payer still depositing
+# is a job that is ending, so it only counts for as many paychecks as you say are left.
+ending_jobs = {}
+for _, job in paycheck_streams.iloc[1:].iterrows():
+    ending_jobs[job["payer"]] = st.sidebar.number_input(
+        f"Paychecks left from {job['payer']}", value=0, min_value=0, step=1)
+if ending_jobs:
+    st.sidebar.caption("Zero is the cautious choice for a job that is ending.")
+
 monthly_income = paycheck_amount * paycheck_per_year / 12 + uber_avg * uber_per_year / 12
 fixed_obligations = rent + family_payment + car_loan + student_loan
 base_net = monthly_income - fixed_obligations - discretionary
@@ -127,6 +150,126 @@ ui.tile_row([
     promo_tile,
 ], min_width=150)
 
+# ---------- Cash forecast ----------
+# Today's cash, then every expected paycheck and bill laid on a calendar. The lowest
+# point ahead, not today's balance, is what decides how much cash is really free.
+ui.section_label("Cash forecast")
+
+# The levers live further down the page; read them here so both sections agree.
+lever_cut = st.session_state.get("lever_cut", 0)
+lever_income = st.session_state.get("lever_side", 0) + st.session_state.get("lever_raise", 0)
+
+with st.container(border=True, key="card_cash_forecast"):
+    horizon_col, floor_col, move_col = st.columns([2, 1, 1], vertical_alignment="bottom")
+    horizon = horizon_col.segmented_control(
+        "Look ahead", [30, 60, 90], default=90, format_func=lambda d: f"{d} days", key="cash_horizon") or 90
+    cash_floor = floor_col.number_input("Keep at least", value=1000.0, min_value=0.0, step=100.0)
+    move_today = move_col.number_input("Send to debt today", value=0.0, min_value=0.0, step=100.0)
+
+    horizon_end = today + pd.Timedelta(days=horizon)
+    cash_today = float(accounts.loc[accounts["account_type"].isin(["checking", "savings"]), "last_balance"].sum())
+    planned = []  # (date, label, signed amount)
+
+    if not paycheck_streams.empty:
+        current_job = paycheck_streams.iloc[0]
+        per_paycheck_extra = lever_income * 12 / paycheck_per_year
+        for due in forecast.occurrences(current_job["last_date"], forecast.schedule_step(paycheck_per_year), today, horizon_end):
+            planned.append((due, "Paycheck", paycheck_amount + per_paycheck_extra))
+        for _, job in paycheck_streams.iloc[1:].iterrows():
+            left = int(ending_jobs.get(job["payer"], 0))
+            step = forecast.schedule_step(job["per_year"] or FALLBACK_PAYCHECKS_PER_YEAR)
+            for due in forecast.occurrences(job["last_date"], step, today, horizon_end, limit=left) if left else []:
+                planned.append((due, f"Final paycheck, {job['payer'].title()}", job["amount"]))
+
+    gig = streams[streams["category"] == "income:uber"]
+    if not gig.empty and uber_avg > 0 and uber_per_year > 0:
+        for due in forecast.occurrences(gig["last_date"].max(), forecast.schedule_step(uber_per_year), today, horizon_end):
+            planned.append((due, "Side gig", uber_avg))
+
+    for _, bill in forecast.recurring_bills(cash_txns, today).iterrows():
+        for due in forecast.occurrences(bill["last_date"], pd.DateOffset(months=1), today, horizon_end):
+            planned.append((due, bill["label"], bill["amount"]))
+
+    monthly_card_payment = max(0.0, card_payments - lever_cut)
+    if last_card_payment is not None and monthly_card_payment > 0:
+        for due in forecast.occurrences(last_card_payment, pd.DateOffset(months=1), today, horizon_end):
+            planned.append((due, "Card payments", -monthly_card_payment))
+
+    events = pd.DataFrame(planned, columns=["date", "label", "amount"])
+    daily, upcoming = forecast.project_balance(
+        cash_today - move_today, events, other_spending / 30.44, today, horizon)
+
+    low = daily.loc[daily["balance"].idxmin()]
+    end_balance = float(daily["balance"].iloc[-1])
+    headroom = float(low["balance"]) - cash_floor
+    if headroom >= 0:
+        room_tile = ui.stat_tile(
+            "Free to send to debt" if move_today == 0 else "Still free after that",
+            ui.money(headroom), f'<span class="delta good">✓</span> Stays above {ui.money(cash_floor)}')
+    else:
+        room_tile = ui.stat_tile(
+            "Short of your floor", ui.money(-headroom),
+            f'<span class="delta bad">✕</span> Dips below {ui.money(cash_floor)} on {low["date"].strftime("%b %-d")}')
+    change = end_balance - cash_today
+    ui.tile_row([
+        ui.stat_tile("Cash today", ui.money(cash_today),
+                     f"Before sending {ui.money(move_today)}" if move_today else "Checking and savings"),
+        ui.stat_tile("Lowest point ahead", ui.money(low["balance"]),
+                     f"{low['date'].strftime('%A, %b %-d')}" + (f", after {html.escape(low['events'].lower())}" if low["events"] else "")),
+        room_tile,
+        ui.stat_tile(f"In {horizon} days", ui.money(end_balance),
+                     f'<span class="delta {"good" if change >= 0 else "bad"}">{"▲" if change >= 0 else "▼"} '
+                     f'{ui.money(abs(change))}</span> vs today'),
+    ], min_width=170)
+
+    # Balances move in steps on the days money moves, so the line is stepped, not sloped.
+    y_top = max(daily["balance"].max(), cash_floor) * 1.12
+    y_bottom = min(0.0, float(daily["balance"].min()) * 1.1)
+    x = alt.X("date:T", title=None, axis=alt.Axis(format="%b %-d", grid=False, tickCount=8, labelFlush=False))
+    y = alt.Y("balance:Q", title=None, scale=alt.Scale(domain=[y_bottom, y_top], nice=False),
+              axis=alt.Axis(format="$,.0f", tickCount=5, domain=False, ticks=False))
+    tooltip = [alt.Tooltip("date:T", title="Date", format="%a, %b %-d"),
+               alt.Tooltip("balance:Q", title="Balance", format="$,.0f"),
+               alt.Tooltip("events:N", title="That day")]
+    hover = alt.selection_point(nearest=True, on="mouseover", fields=["date"], empty=False, clear="mouseout")
+    line_base = alt.Chart(daily)
+    floor_mark = pd.DataFrame({"floor": [cash_floor], "label": [f"Your floor, {ui.money(cash_floor)}"]})
+    low_mark = pd.DataFrame({"date": [low["date"]], "balance": [low["balance"]],
+                             "label": [f"Low {ui.money(low['balance'])}"]})
+    low_on_right = low["date"] > today + pd.Timedelta(days=horizon * 0.8)
+    ui.show_chart(alt.layer(
+        line_base.mark_area(interpolate="step-after", color=ui.ACCENT, opacity=0.10).encode(x=x, y=y),
+        alt.Chart(floor_mark).mark_rule(color=ui.WARNING, strokeWidth=1.5).encode(y="floor:Q"),
+        alt.Chart(floor_mark).mark_text(align="right", baseline="top", dy=5, fontSize=12, color=ui.INK_SECONDARY)
+           .encode(x=alt.value("width"), y="floor:Q", text="label:N"),
+        line_base.mark_line(interpolate="step-after", color=ui.ACCENT, strokeWidth=2, strokeJoin="round").encode(x=x, y=y),
+        line_base.mark_rule(color=ui.INK_MUTED, strokeWidth=1).encode(
+            x=x, opacity=alt.condition(hover, alt.value(0.7), alt.value(0)), tooltip=tooltip).add_params(hover),
+        alt.Chart(low_mark).mark_point(size=90, filled=True, opacity=1, color=ui.ACCENT, stroke=ui.SURFACE, strokeWidth=2)
+           .encode(x="date:T", y="balance:Q"),
+        alt.Chart(low_mark).mark_text(align="right" if low_on_right else "left", dx=-9 if low_on_right else 9, dy=14,
+                                      fontSize=12, fontWeight=600, color=ui.INK)
+           .encode(x="date:T", y="balance:Q", text="label:N"),
+    ), height=300)
+    # Escape "$" so Streamlit's markdown does not read two amounts as a LaTeX formula.
+    st.caption((
+        f"Built from your detected paychecks and bills, card payments of {ui.money(monthly_card_payment)} a month, "
+        f"and {ui.money(other_spending / 30.44, cents=True)} a day of unscheduled spending. "
+        "Change any of these in the sidebar. The sliders under Debt payoff also apply here."
+    ).replace("$", "\\$"))
+
+    with st.expander(f"What is expected in the next {horizon} days ({len(upcoming)} items)"):
+        st.dataframe(
+            upcoming[["date", "label", "amount", "balance_after"]],
+            hide_index=True, use_container_width=True, height=min(38 * len(upcoming) + 40, 420),
+            column_config={
+                "date": st.column_config.DateColumn("Date", format="ddd, MMM D", width="small"),
+                "label": st.column_config.TextColumn("What", width="large"),
+                "amount": st.column_config.NumberColumn("Amount", format="dollar", width="small"),
+                "balance_after": st.column_config.NumberColumn("End of day balance", format="dollar", width="small"),
+            },
+        )
+
 # ---------- Debt focus + levers ----------
 ui.section_label("Debt payoff")
 debt_accounts = accounts[accounts["account_type"] == "credit_card"].copy()
@@ -146,9 +289,9 @@ with left, st.container(border=True, key="card_levers"):
     focus_deadline = focus_row["promo_apr_expires"] if pd.notna(focus_row["promo_apr_expires"]) else None
 
     st.subheader("Levers")
-    cut = st.slider("Cut card spending ($/mo)", 0, 2000, 0, step=25)
-    side = st.slider("More side income ($/mo)", 0, 1500, 0, step=25)
-    raise_ = st.slider("Raise / new job ($/mo)", 0, 1500, 0, step=25)
+    cut = st.slider("Cut card spending ($/mo)", 0, 2000, 0, step=25, key="lever_cut")
+    side = st.slider("More side income ($/mo)", 0, 1500, 0, step=25, key="lever_side")
+    raise_ = st.slider("Raise / new job ($/mo)", 0, 1500, 0, step=25, key="lever_raise")
 
     toward_debt = max(0.0, base_net + cut + side + raise_)
     st.markdown(
