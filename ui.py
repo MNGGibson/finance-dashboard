@@ -165,5 +165,26 @@ def style_chart(chart, height=None):
     )
 
 
-def show_chart(chart, height=None):
-    st.altair_chart(style_chart(chart, height), use_container_width=True, theme=None)
+def show_chart(chart, height=None, key=None, selection=None, on_select="rerun"):
+    """Render a chart. With `selection` (the name of a selection parameter on the chart),
+    clicks are reported back and the chart's event is returned; read it with `picked()`."""
+    styled = style_chart(chart, height)
+    if selection is None:
+        st.altair_chart(styled, use_container_width=True, theme=None)
+        return None
+    return st.altair_chart(styled, use_container_width=True, theme=None,
+                           key=key, on_select=on_select, selection_mode=selection)
+
+
+def picked(event, selection, field):
+    """The clicked value of `field`, or None when nothing is selected."""
+    points = (event or {}).get("selection", {}).get(selection) or []
+    return points[0].get(field) if points else None
+
+
+def click_and_hover(field):
+    """The two selection parameters every clickable chart uses: `pick` (click to select,
+    click again or click empty space to clear) and `hover` (so the mark visibly responds)."""
+    pick = alt.selection_point(name="pick", fields=[field], on="click")
+    hover = alt.selection_point(name="hover", fields=[field], on="mouseover", clear="mouseout", empty=False)
+    return pick, hover

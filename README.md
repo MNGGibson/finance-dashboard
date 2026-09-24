@@ -70,6 +70,8 @@ Opens at http://localhost:8501. `app.py` handles page setup; the dashboard lives
 
 - **Dashboard** — net worth as the lead number with an assets-versus-debt bar, then a row of tiles for the selected month: income, bills, card spending, and what is left for debt and savings (the first three add up to the fourth), plus what was paid to cards. Each compares with the same stretch of the previous month. The **Show** control cross-filters the category chart, a top-merchants chart, the account list, and transactions together. Trend charts cover spending pace, monthly cash flow, and spending per day.
 
+The charts are interactive. Click a category bar and the merchant chart and transactions narrow to it; click a merchant bar and the transactions narrow again; click the bar once more, or empty space, to clear. Click a month in the cash flow or spending-per-day chart and the whole dashboard switches to that month. The spending pace chart has a crosshair that reads both months at the day under the pointer. Streamlit only reports clicks from single-layer Altair charts, so the clickable ones carry their amounts in the row labels rather than in a separate text layer.
+
 Two rules keep the months honest. Card payments are shown apart from bills and outflows, because they settle card spending that is already counted. Rent posted in the last three days of a month counts toward the month it pays for. Merchant names are cleaned up from raw bank descriptions by `merchants.py`, a heuristic, so that grouping is approximate.
 
 Manage savings goals and card APRs from the CLI (Metabase has no easy write-back form for this):
