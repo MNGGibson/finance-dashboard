@@ -53,16 +53,5 @@ CREATE TABLE IF NOT EXISTS category_rules (
     priority  INT NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS goals (
-    id                 SERIAL PRIMARY KEY,
-    name               TEXT NOT NULL,
-    target_amount      NUMERIC(14, 2) NOT NULL,
-    target_date        DATE,
-    -- progress is tracked as this account's balance minus starting_amount
-    linked_account_id  TEXT REFERENCES accounts(id),
-    starting_amount    NUMERIC(14, 2) NOT NULL DEFAULT 0,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 -- Existing databases created before category_manual existed.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_manual BOOLEAN NOT NULL DEFAULT false;

@@ -18,15 +18,5 @@ services:
       timeout: 5s
       retries: 10
 
-  metabase:
-    image: metabase/metabase:latest
-    container_name: finance-metabase
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:3000:3000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 volumes:
   postgres_data:

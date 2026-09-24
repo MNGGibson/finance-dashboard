@@ -375,7 +375,7 @@ with st.container(border=True, key="card_transactions"):
     st.caption(summary.replace("$", "\\$"))
     st.dataframe(
         table[["posted", "description", "category", "account_name", "amount"]],
-        hide_index=True, use_container_width=True, height=420,
+        hide_index=True, width="stretch", height=420,
         column_config={
             "posted": st.column_config.DateColumn("Date", format="MMM D", width="small"),
             "description": st.column_config.TextColumn("Description", width="large"),

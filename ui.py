@@ -170,9 +170,9 @@ def show_chart(chart, height=None, key=None, selection=None, on_select="rerun"):
     clicks are reported back and the chart's event is returned; read it with `picked()`."""
     styled = style_chart(chart, height)
     if selection is None:
-        st.altair_chart(styled, use_container_width=True, theme=None)
+        st.altair_chart(styled, width="stretch", theme=None)
         return None
-    return st.altair_chart(styled, use_container_width=True, theme=None,
+    return st.altair_chart(styled, width="stretch", theme=None,
                            key=key, on_select=on_select, selection_mode=selection)
 
 

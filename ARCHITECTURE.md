@@ -4,7 +4,7 @@ How this system is put together, and why it's built this way.
 
 ## Overview
 
-One Postgres database is the single source of truth. A daily script pulls from SimpleFIN and categorizes every transaction on the way in. Two independent presentation layers read from that same database: Metabase for standard BI-style reporting, and a Streamlit app for the parts Metabase can't do — live, cross-filtering KPIs and an interactive debt-payoff simulator with adjustable what-if levers.
+One Postgres database is the single source of truth. A daily script pulls from SimpleFIN and categorizes every transaction on the way in. A Streamlit dashboard reads from that database: net worth, cross-filtering monthly KPIs, spending by category and merchant, and trends.
 
 ```mermaid
 flowchart TD
@@ -15,11 +15,9 @@ flowchart TD
     SETUP[scripts/setup.py] -.one-time token exchange.-> SF
     LAUNCHD[launchd, daily 7am] -.triggers.-> SYNC
 
-    PG --> ST[Streamlit app]
-    PG --> MB[Metabase]
+    PG --> ST[Streamlit dashboard]
 
-    ST -->|manage goals/APRs| CLI[scripts/add_goal.py<br/>scripts/set_apr.py]
-    CLI --> PG
+    CLI[scripts/set_category.py<br/>scripts/set_apr.py] -->|categories, APRs| PG
 ```
 
 ## Components
@@ -31,16 +29,13 @@ Pulls accounts, balances, and transactions from the SimpleFIN API, then upserts 
 Every transaction description is matched against substring rules in `category_rules` (`income:paycheck`, `bill:rent`, etc.), highest-priority match wins. Anything on a credit card that doesn't match any rule falls back to `spending:discretionary` automatically — that one fallback rule is what makes "spending" and "daily spend average" work without hand-tagging every merchant. Rules live in the database, not code, so they're editable without a deploy. A category set by hand (`scripts/set_category.py`) is flagged `category_manual` and the sync never overwrites it; `sync.py --recategorize` re-runs the rules over everything else, which matters because the daily sync only re-fetches a two-week window. The sync exits non-zero when SimpleFIN reports an error or returns no accounts, so a dead bank link fails loudly instead of quietly going stale.
 
 **Storage — Postgres**
-Chosen over SQLite specifically because Metabase's SQLite support is a community-maintained driver, not first-class — Postgres is the standard pairing and avoids that friction entirely. Runs in Docker, data lives in a named volume (never in the repo).
+Runs in Docker, data lives in a named volume (never in the repo). Postgres rather than SQLite so any BI tool can be pointed at the same data later without a driver workaround.
 
 **Presentation — Streamlit app**
-Metabase (and BI tools generally) can show and filter *stored* data, but can't cross-filter a whole page from one control so that every chart, list and table reconciles to the number you picked, or compare a partial month against the same stretch of the previous one. The dashboard exists for that. An earlier debt-payoff forecasting page was removed as not useful in practice; it is preserved on the `forecasting-archive` branch.
-
-**Presentation — Metabase**
-Handles the plain reporting side: trend charts, filters, anything that's really just "query and visualize stored data." Also has a native-SQL card with dashboard-level number filters, which is the closest a BI tool gets to the same live lever the Streamlit app does — useful as a comparison point for what each tool is actually good at.
+Off-the-shelf BI tools can show and filter *stored* data, but can't cross-filter a whole page from one control so that every chart, list and table reconciles to the number you picked, or compare a partial month against the same stretch of the previous one. The dashboard exists for that. An earlier debt-payoff forecasting page was removed as not useful in practice; it is preserved on the `forecasting-archive` branch.
 
 **Automation — launchd**
-Runs `sync.py` daily. macOS-native rather than a bundled scheduler so it keeps running independent of whether any app is open.
+Two launchd agents: one keeps the dashboard running on localhost:8511, one runs the sync every morning. Both go through `scripts/ensure_docker.sh`, which starts Docker Desktop if it is not running, so a reboot does not leave either without a database. The sync wrapper raises a macOS notification when a run fails.
 
 ## Data model
 
@@ -48,7 +43,6 @@ Runs `sync.py` daily. macOS-native rather than a bundled scheduler so it keeps r
 erDiagram
     accounts ||--o{ transactions : has
     accounts ||--o{ balance_snapshots : has
-    accounts ||--o{ goals : "linked_account_id (optional)"
     category_rules ||..o{ transactions : "tags via pattern match"
 
     accounts {
@@ -81,14 +75,6 @@ erDiagram
         text pattern "ILIKE substring"
         text category
         int priority
-    }
-    goals {
-        int id PK
-        text name
-        numeric target_amount
-        date target_date
-        text linked_account_id FK
-        numeric starting_amount
     }
 ```
 

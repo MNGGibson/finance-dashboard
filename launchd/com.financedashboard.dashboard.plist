@@ -4,24 +4,14 @@
 <!-- Replace every /path/to/finance-dashboard below with this project's actual absolute path before loading.
      Keeps the Streamlit dashboard running on http://localhost:8511.
      Bound to localhost only: the app shows real bank data, so it is not exposed to the network.
-     Needs Docker (finance-postgres) to be running for data to load. -->
+     run_dashboard.sh starts Docker Desktop if it is not running before launching Streamlit. -->
 <dict>
     <key>Label</key>
     <string>com.financedashboard.dashboard</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/path/to/finance-dashboard/.venv/bin/streamlit</string>
-        <string>run</string>
-        <string>app.py</string>
-        <string>--server.port</string>
-        <string>8511</string>
-        <string>--server.address</string>
-        <string>localhost</string>
-        <string>--server.headless</string>
-        <string>true</string>
-        <string>--browser.gatherUsageStats</string>
-        <string>false</string>
+        <string>/path/to/finance-dashboard/scripts/run_dashboard.sh</string>
     </array>
 
     <key>WorkingDirectory</key>

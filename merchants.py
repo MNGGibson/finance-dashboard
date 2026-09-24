@@ -69,7 +69,11 @@ def _strip_location(words, cities):
     body = words[:-1]
     last = body[-1]
     glued = _glued_city(last, cities)
-    if last in cities or re.fullmatch(r"\d+[A-Z]{4,}", last):  # "0NORCROSS": store-number tail + city
+    # A plain word right before an unambiguous state code is a city even if it has been seen
+    # only once ("CHICK-FIL-A #03717 0THOMSON GA"); learned cities are needed only for the
+    # ambiguous codes and for a city glued onto the merchant.
+    plain_city = words[-1] not in AMBIGUOUS_STATES and last.isalpha() and len(last) >= 3
+    if last in cities or plain_city or re.fullmatch(r"\d+[A-Z]{3,}", last):  # "0NORCROSS"
         body = body[:-1]
     elif glued:
         body[-1] = last[: -len(glued)]

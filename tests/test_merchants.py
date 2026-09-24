@@ -56,6 +56,12 @@ def test_english_word_is_not_mistaken_for_a_state():
     assert name("SOME SHOP MARIETTA IN") == "Some Shop"  # a learned city before IN still counts
 
 
+def test_unlearned_city_before_a_clear_state_is_still_dropped():
+    assert name("CHICK-FIL-A #03717 0THOMSON GA") == "Chick-Fil-A"
+    assert name("KROGER 0412 SOMEWHERENEW GA") == "Kroger"
+    assert name("MICROSOFT*MICROSOFT 36 REDMOND WA") == "Microsoft"
+
+
 def test_add_merchants_adds_a_column():
     import pandas as pd
     df = pd.DataFrame({"description": DESCRIPTIONS[:2]})
