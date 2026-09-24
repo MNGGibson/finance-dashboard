@@ -6,10 +6,13 @@
     <key>Label</key>
     <string>com.financedashboard.sync</string>
 
+    <!-- --days 14: card charges post days after they happen; a one-day window misses them. Upserts are idempotent, so overlap is harmless. -->
     <key>ProgramArguments</key>
     <array>
         <string>/path/to/finance-dashboard/.venv/bin/python3</string>
         <string>/path/to/finance-dashboard/scripts/sync.py</string>
+        <string>--days</string>
+        <string>14</string>
     </array>
 
     <key>WorkingDirectory</key>
