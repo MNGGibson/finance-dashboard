@@ -23,6 +23,8 @@ def test_real_errors_and_empty_responses_fail(capsys):
 def test_categorize_rules_then_card_fallback():
     rules = [("acme corp", "income:paycheck"), ("amex epayment", "bill:debt_payment")]
     assert sync.categorize("ACH: ACME CORP PAYROLL", rules) == "income:paycheck"
-    assert sync.categorize("STARBUCKS 08371", rules, account_type="credit_card", amount=-5.0) == "spending:discretionary"
+    assert (
+        sync.categorize("STARBUCKS 08371", rules, account_type="credit_card", amount=-5.0) == "spending:discretionary"
+    )
     assert sync.categorize("Refund", rules, account_type="credit_card", amount=5.0) is None
     assert sync.categorize("STARBUCKS", rules, account_type=None, amount=-5.0) is None

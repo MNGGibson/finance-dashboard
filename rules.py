@@ -3,6 +3,7 @@
 Every frame here comes from finance_data.load_transactions(): columns posted, amount,
 description, category, account_id, account_name, account_type.
 """
+
 import pandas as pd
 
 CARD_PAYMENT = "bill:debt_payment"
@@ -78,12 +79,28 @@ def net_worth_as_of(history, cutoff):
 
 def rank_by(txns, column, keep=None):
     """Totals per value of `column`, largest first, with a tail folded into 'N others'."""
-    ranked = (txns.groupby(column)["amount"].agg(amount=lambda a: abs(a.sum()), count="size")
-              .sort_values("amount", ascending=False).reset_index().rename(columns={column: "label"}))
+    ranked = (
+        txns.groupby(column)["amount"]
+        .agg(amount=lambda a: abs(a.sum()), count="size")
+        .sort_values("amount", ascending=False)
+        .reset_index()
+        .rename(columns={column: "label"})
+    )
     ranked["is_rest"] = False
     if keep is not None and len(ranked) > keep:
         rest = ranked.iloc[keep:]
-        ranked = pd.concat([ranked.iloc[:keep], pd.DataFrame({
-            "label": [f"{len(rest)} others"], "amount": [rest["amount"].sum()],
-            "count": [rest["count"].sum()], "is_rest": [True]})], ignore_index=True)
+        ranked = pd.concat(
+            [
+                ranked.iloc[:keep],
+                pd.DataFrame(
+                    {
+                        "label": [f"{len(rest)} others"],
+                        "amount": [rest["amount"].sum()],
+                        "count": [rest["count"].sum()],
+                        "is_rest": [True],
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
     return ranked

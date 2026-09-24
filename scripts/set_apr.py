@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Set the real APR on a credit card / loan account, once you know it."""
+
 import argparse
 import sys
 from pathlib import Path

@@ -53,5 +53,9 @@ CREATE TABLE IF NOT EXISTS category_rules (
     priority  INT NOT NULL DEFAULT 0
 );
 
--- Existing databases created before category_manual existed.
-ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_manual BOOLEAN NOT NULL DEFAULT false;
+-- Records which db/migrations/*.sql have run (scripts/migrate.py). Fresh databases get
+-- the full schema above; migrations are for databases that already hold data.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name        TEXT PRIMARY KEY,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -1,5 +1,7 @@
 # Finance Dashboard
 
+[![CI](https://github.com/MNGGibson/finance-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/MNGGibson/finance-dashboard/actions/workflows/ci.yml)
+
 Pulls balances & transactions from linked bank accounts via [SimpleFIN](https://www.simplefin.org/) into local Postgres, auto-categorizes them into income/bills/discretionary spending, and surfaces a live dashboard on top:
 
 - **A Streamlit app** — a live dashboard with net worth, cross-filtering monthly KPIs, spending by category, spending trends, and promotional-APR deadlines flagged on the accounts that have them
@@ -47,7 +49,15 @@ Pulls all accounts and transactions, upserts them into Postgres (`accounts`, `tr
 
 ## 4. Set up categorization rules
 
-Transactions get tagged `income:*`, `bill:*`, or `spending:discretionary` via simple substring rules, so the dashboards can tell "money in" from "required bills" from "stuff I chose to buy." Seed your own rules directly in Postgres:
+Transactions get tagged `income:*`, `bill:*`, or `spending:discretionary` via substring rules, so the dashboards can tell "money in" from "required bills" from "stuff I chose to buy." Start from the example file, then edit the patterns to match your bank's descriptions:
+
+```bash
+python scripts/rules.py load db/category_rules.example.sql   # seed
+python scripts/rules.py list                                  # see what is loaded
+python scripts/rules.py export > db/category_rules.local.sql  # keep your own copy (gitignored)
+```
+
+Or insert rows directly:
 
 ```sql
 INSERT INTO category_rules (pattern, category, priority) VALUES
@@ -56,7 +66,7 @@ INSERT INTO category_rules (pattern, category, priority) VALUES
   ('%your loan servicer%', 'bill:student_loan', 10);
 ```
 
-Any credit-card charge that doesn't match a rule falls back to `spending:discretionary` automatically — that's what powers the "Spending" and "daily spend average" metrics without needing a rule for every merchant.
+Any credit-card charge that doesn't match a rule falls back to `spending:discretionary` automatically — that's what powers the "Spending" and "daily spend average" metrics without needing a rule for every merchant. After changing rules, `python scripts/sync.py --recategorize` applies them to everything already stored.
 
 ## 5. Run the Streamlit app
 
@@ -101,9 +111,20 @@ for name in dashboard sync; do
 done
 ```
 
-Both run through `scripts/ensure_docker.sh`, which starts Docker Desktop if it is not running, so a reboot does not leave them without a database. The sync wrapper (`scripts/run_sync.sh`) fetches 14 days each run, since card charges post days after they happen, and raises a macOS notification if a run fails. Logs land in `logs/`. To stop one: `launchctl bootout gui/$(id -u)/com.financedashboard.<name>`. After a code change, restart the dashboard with `launchctl kickstart -k gui/$(id -u)/com.financedashboard.dashboard` (it caches database reads for 5 minutes).
+Both run through `scripts/ensure_docker.sh`, which starts Docker Desktop if it is not running, so a reboot does not leave them without a database. The sync wrapper (`scripts/run_sync.sh`) fetches 14 days each run, since card charges post days after they happen, and raises a macOS notification if a run fails. After each sync, `scripts/backup_db.sh` dumps the database to `BACKUP_DIR` (default: a `Backups/finance-dashboard` folder in iCloud Drive; set `BACKUP_DIR` in `.env` to change it) and keeps the last 30 dumps. SimpleFIN only serves 90 days of history, so these dumps are the only copy of anything older. Restore with `gunzip -c finance-<date>.sql.gz | docker exec -i finance-postgres psql -U finance finance`. Logs land in `logs/`. To stop one: `launchctl bootout gui/$(id -u)/com.financedashboard.<name>`. After a code change, restart the dashboard with `launchctl kickstart -k gui/$(id -u)/com.financedashboard.dashboard` (it caches database reads for 5 minutes).
 
 Cash-on-hand snapshots (used by the Overview page to show what cash looked like in *past* months, not just today) come from whichever daily sync lands closest to the 15th of each month — no separate job needed, this just falls out of running the sync daily.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+ruff check . && ruff format --check .   # lint and formatting, same as CI
+pytest                                  # merchant parser, accounting rules, sync error handling
+scripts/install-hooks.sh                # pre-commit hook: refuses commits containing words listed in .private-words
+```
+
+CI runs the same lint and tests on every push. Dependencies are pinned in `requirements.txt`; upgrade deliberately and re-run the tests. Schema changes for an existing database go in `db/migrations/NNN_name.sql` and are applied with `python scripts/migrate.py`; `db/schema.sql` stays the full schema for a fresh install.
 
 ## Schema
 

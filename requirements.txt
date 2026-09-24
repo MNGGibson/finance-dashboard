@@ -1,6 +1,7 @@
-requests
-psycopg2-binary
-python-dotenv
-streamlit
-pandas
-altair
+# Pinned to the versions the app was last tested with. Upgrade deliberately, then run pytest.
+requests==2.34.2
+psycopg2-binary==2.9.13
+python-dotenv==1.2.3
+streamlit==1.64.0
+pandas==3.0.6
+altair==6.3.0

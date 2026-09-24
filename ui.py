@@ -5,6 +5,7 @@ Every page calls `apply_page_style()` once, builds tiles with `stat_tile()` /
 as one system. Colours are a validated dark-surface palette: series colours identify
 data, status colours are reserved for good/bad, and text always uses the ink tokens.
 """
+
 import html
 
 import altair as alt
@@ -154,13 +155,29 @@ def style_chart(chart, height=None):
         chart.configure(background="transparent", font=FONT, padding={"left": 0, "right": 8, "top": 6, "bottom": 0})
         .configure_view(strokeWidth=0)
         .configure_axis(
-            labelColor=INK_MUTED, titleColor=INK_MUTED, labelFontSize=12, titleFontSize=12,
-            titleFontWeight="normal", gridColor=GRID, gridDash=[], domainColor=AXIS,
-            tickColor=AXIS, tickSize=4, labelPadding=6,
+            labelColor=INK_MUTED,
+            titleColor=INK_MUTED,
+            labelFontSize=12,
+            titleFontSize=12,
+            titleFontWeight="normal",
+            gridColor=GRID,
+            gridDash=[],
+            domainColor=AXIS,
+            tickColor=AXIS,
+            tickSize=4,
+            labelPadding=6,
         )
         .configure_legend(
-            labelColor=INK_SECONDARY, titleColor=INK_MUTED, labelFontSize=12, symbolType="square",
-            symbolSize=90, orient="top", direction="horizontal", title=None, padding=0, offset=8,
+            labelColor=INK_SECONDARY,
+            titleColor=INK_MUTED,
+            labelFontSize=12,
+            symbolType="square",
+            symbolSize=90,
+            orient="top",
+            direction="horizontal",
+            title=None,
+            padding=0,
+            offset=8,
         )
     )
 
@@ -172,8 +189,7 @@ def show_chart(chart, height=None, key=None, selection=None, on_select="rerun"):
     if selection is None:
         st.altair_chart(styled, width="stretch", theme=None)
         return None
-    return st.altair_chart(styled, width="stretch", theme=None,
-                           key=key, on_select=on_select, selection_mode=selection)
+    return st.altair_chart(styled, width="stretch", theme=None, key=key, on_select=on_select, selection_mode=selection)
 
 
 def picked(event, selection, field):

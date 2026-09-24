@@ -8,6 +8,7 @@ themselves, then a glued city is recognised as a suffix of the last word. This i
 heuristic, not a merchant database: it aims to put the same merchant in the same
 bucket, and the dashboard says the grouping is approximate where it is shown.
 """
+
 import re
 from collections import Counter
 
@@ -21,14 +22,33 @@ STATES = set(
 # a state only when the word before them is a city already learned from unambiguous ones.
 AMBIGUOUS_STATES = {"IN", "OR", "ME", "OK", "HI", "DE", "ID", "PA", "MA", "AL", "CO", "MT", "MD"}
 # How you paid or how the bank labelled it, not where the money went.
-PREFIXES = re.compile(
-    r"^(APLPAY|GGLPAY|SQ \*|PAYPAL \*|DEBIT CARD:|ACH:|ZELLE:|DIRECT PAYMENT:|DIRECT DEPOSIT:)\s*")
+PREFIXES = re.compile(r"^(APLPAY|GGLPAY|SQ \*|PAYPAL \*|DEBIT CARD:|ACH:|ZELLE:|DIRECT PAYMENT:|DIRECT DEPOSIT:)\s*")
 PROCESSOR_CODE = re.compile(r"^[A-Z]{2,4}\*\s*")  # "TST*", "PAR*", "BT*", "TJ* "
-CITY_FIRST_WORDS = {"NEW", "SAN", "LOS", "LAS", "SANTA", "FORT", "SAINT", "ST", "EL", "PORT", "CAPE",
-                    "MOUNTAIN", "HUNT", "NORTH", "SOUTH", "EAST", "WEST"}
+CITY_FIRST_WORDS = {
+    "NEW",
+    "SAN",
+    "LOS",
+    "LAS",
+    "SANTA",
+    "FORT",
+    "SAINT",
+    "ST",
+    "EL",
+    "PORT",
+    "CAPE",
+    "MOUNTAIN",
+    "HUNT",
+    "NORTH",
+    "SOUTH",
+    "EAST",
+    "WEST",
+}
 # The few brands big enough to show up under several spellings.
-ALIASES = [(("AMAZON", "AMZN"), "Amazon"), (("WAL-MART", "WALMART", "WM SUPERCENTER"), "Walmart"),
-           (("SAM'S CLUB", "SAMS CLUB", "SAMSCLUB"), "Sam's Club")]
+ALIASES = [
+    (("AMAZON", "AMZN"), "Amazon"),
+    (("WAL-MART", "WALMART", "WM SUPERCENTER"), "Walmart"),
+    (("SAM'S CLUB", "SAMS CLUB", "SAMSCLUB"), "Sam's Club"),
+]
 
 
 def _words(description):
@@ -96,7 +116,7 @@ def merchant_name(description, cities):
     if text.startswith("PLAN FEE"):
         return "Card plan fees"
     if text.startswith("ZELLE PAYMENT TO "):
-        return "Zelle to " + text[len("ZELLE PAYMENT TO "):].title()
+        return "Zelle to " + text[len("ZELLE PAYMENT TO ") :].title()
     for spellings, brand in ALIASES:
         if text.startswith(spellings):
             return brand

@@ -3,6 +3,7 @@
 Everything that talks to the database goes through here, so connection options and
 the local time zone are set in one place.
 """
+
 import os
 from datetime import datetime
 from decimal import Decimal

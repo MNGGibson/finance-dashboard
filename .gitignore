@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 logs/*.log
 .pytest_cache/
+db/category_rules.local.sql
+.private-words

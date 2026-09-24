@@ -1,4 +1,5 @@
 """Cached data loaders for the Streamlit app."""
+
 import pandas as pd
 import streamlit as st
 
@@ -10,8 +11,7 @@ from rules import income_mask  # noqa: F401  (re-exported: the app's income defi
 @st.cache_data(ttl=300)
 def load_accounts():
     return query(
-        "SELECT id, name, org_name, account_type, last_balance, apr, promo_apr_expires, post_promo_apr "
-        "FROM accounts"
+        "SELECT id, name, org_name, account_type, last_balance, apr, promo_apr_expires, post_promo_apr FROM accounts"
     )
 
 

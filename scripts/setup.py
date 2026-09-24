@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """One-time exchange of a SimpleFIN setup token for a persistent access URL."""
+
 import base64
 import sys
 from pathlib import Path
@@ -23,10 +24,7 @@ def main():
     env_path = ROOT / ".env"
     lines = []
     if env_path.exists():
-        lines = [
-            line for line in env_path.read_text().splitlines()
-            if not line.startswith("SIMPLEFIN_ACCESS_URL=")
-        ]
+        lines = [line for line in env_path.read_text().splitlines() if not line.startswith("SIMPLEFIN_ACCESS_URL=")]
     lines.append(f"SIMPLEFIN_ACCESS_URL={access_url}")
     env_path.write_text("\n".join(lines) + "\n")
 

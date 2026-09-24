@@ -5,6 +5,7 @@ Intended to run daily (see launchd/com.financedashboard.sync.plist). Exits non-z
 when SimpleFIN reports an error or returns no accounts, so a broken bank link shows up
 as a failed job rather than a quiet stretch of stale data.
 """
+
 import argparse
 import json
 import os
@@ -102,7 +103,8 @@ def upsert(conn, data):
 
             for txn in account.get("transactions", []):
                 category = categorize(
-                    txn.get("description"), rules,
+                    txn.get("description"),
+                    rules,
                     account_type=account_types.get(account["id"]),
                     amount=txn["amount"],
                 )
@@ -148,13 +150,13 @@ def recategorize(conn):
     account_types = load_account_types(conn)
     changed = 0
     with conn.cursor() as cur:
-        cur.execute("SELECT id, account_id, description, amount, category FROM transactions "
-                    "WHERE NOT category_manual")
+        cur.execute("SELECT id, account_id, description, amount, category FROM transactions WHERE NOT category_manual")
         for txn_id, account_id, description, amount, current in cur.fetchall():
             category = categorize(description, rules, account_types.get(account_id), amount)
             if category is not None and category != current:
-                cur.execute("UPDATE transactions SET category = %s, updated_at = now() WHERE id = %s",
-                            (category, txn_id))
+                cur.execute(
+                    "UPDATE transactions SET category = %s, updated_at = now() WHERE id = %s", (category, txn_id)
+                )
                 changed += 1
     conn.commit()
     return changed
@@ -179,11 +181,14 @@ def response_problems(data):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--days", type=int, default=None,
+        "--days",
+        type=int,
+        default=None,
         help="Request this many days of transaction history (bank may return less than asked for)",
     )
     parser.add_argument(
-        "--recategorize", action="store_true",
+        "--recategorize",
+        action="store_true",
         help="Also re-run the category rules over every stored transaction not tagged by hand",
     )
     args = parser.parse_args()

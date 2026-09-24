@@ -1,4 +1,5 @@
 """Overview page: where things stand today, and income/spending for a selected month."""
+
 import html
 from datetime import date
 
@@ -9,8 +10,18 @@ import streamlit as st
 import ui
 from finance_data import cash_on_hand_for_month, load_accounts, load_balance_history, load_transactions
 from rules import (
-    CASH_TYPES, category_label, days_counted, effective_date, income_mask, is_bill, is_card_payment,
-    is_spending, is_transfer, month_totals, net_worth_as_of, rank_by,
+    CASH_TYPES,
+    category_label,
+    days_counted,
+    effective_date,
+    income_mask,
+    is_bill,
+    is_card_payment,
+    is_spending,
+    is_transfer,
+    month_totals,
+    net_worth_as_of,
+    rank_by,
 )
 
 FILTERS = ["All", "Income", "Bills", "Spending", "Card payments", "Cash", "Debt"]
@@ -30,8 +41,12 @@ month_labels = {m: m.strftime("%B %Y") for m in available_months}
 title_col, month_col = st.columns([3, 1], vertical_alignment="bottom")
 title_col.title("Overview")
 selected_month = month_col.selectbox(
-    "Month", options=available_months, format_func=lambda m: month_labels[m], index=0,
-    label_visibility="collapsed", key="month_select",
+    "Month",
+    options=available_months,
+    format_func=lambda m: month_labels[m],
+    index=0,
+    label_visibility="collapsed",
+    key="month_select",
 )
 month_name = month_labels[selected_month]
 month_txns = transactions[transactions["month"] == selected_month]
@@ -44,7 +59,8 @@ total_debt = -accounts.loc[accounts["last_balance"] < 0, "last_balance"].sum()
 past_worth, past_date = net_worth_as_of(load_balance_history(), today - pd.Timedelta(days=30))
 hero_note = (
     ui.delta_html(net_worth, past_worth, up_is_good=True, versus=past_date.strftime("%b %-d"))
-    if past_worth is not None else "Trend appears once a month of daily syncs has built up"
+    if past_worth is not None
+    else "Trend appears once a month of daily syncs has built up"
 )
 
 cash_snapshot = cash_on_hand_for_month(selected_month, snapshot_day=15)
@@ -68,7 +84,7 @@ with st.container(border=True, key="card_hero"):
         f'<div class="legend">'
         f'<span><span class="swatch" style="background:{ui.SERIES["blue"]}"></span>Assets <b>{ui.money(assets)}</b></span>'
         f'<span><span class="swatch" style="background:{ui.SERIES["orange"]}"></span>Debt <b>{ui.money(total_debt)}</b></span>'
-        f'<span>{cash_text}</span></div>',
+        f"<span>{cash_text}</span></div>",
         unsafe_allow_html=True,
     )
 
@@ -93,15 +109,23 @@ paid_to_cards = -month_txns.loc[is_card_payment(month_txns), "amount"].sum()
 p_paid_to_cards = -prev_txns.loc[is_card_payment(prev_txns), "amount"].sum() if has_prev else None
 
 ui.section_label(month_name)
-ui.tile_row([
-    ui.stat_tile("Income", ui.money(income), ui.delta_html(income, p_income, True, versus)),
-    ui.stat_tile("Bills", ui.money(bills), ui.delta_html(bills, p_bills, False, versus)),
-    ui.stat_tile("Card spending", ui.money(spending), ui.delta_html(spending, p_spending, False, versus)),
-    ui.stat_tile("Left for debt and savings", ui.money(left_over), ui.delta_html(left_over, p_left_over, True, versus)),
-    ui.stat_tile("Paid to cards", ui.money(paid_to_cards), ui.delta_html(paid_to_cards, p_paid_to_cards, None, versus)),
-])
-st.caption("Income minus bills minus card spending is what is left. Card payments are shown apart "
-           "because they pay for spending that is already counted.")
+ui.tile_row(
+    [
+        ui.stat_tile("Income", ui.money(income), ui.delta_html(income, p_income, True, versus)),
+        ui.stat_tile("Bills", ui.money(bills), ui.delta_html(bills, p_bills, False, versus)),
+        ui.stat_tile("Card spending", ui.money(spending), ui.delta_html(spending, p_spending, False, versus)),
+        ui.stat_tile(
+            "Left for debt and savings", ui.money(left_over), ui.delta_html(left_over, p_left_over, True, versus)
+        ),
+        ui.stat_tile(
+            "Paid to cards", ui.money(paid_to_cards), ui.delta_html(paid_to_cards, p_paid_to_cards, None, versus)
+        ),
+    ]
+)
+st.caption(
+    "Income minus bills minus card spending is what is left. Card payments are shown apart "
+    "because they pay for spending that is already counted."
+)
 
 # ---------- Cross-filter: one control, every visual below follows it ----------
 st.write("")
@@ -128,6 +152,7 @@ if choice in ("Income", "Bills", "Spending", "Card payments"):
 
 chart_col, accounts_col = st.columns([3, 2])
 
+
 def ranked_bars(ranked, label_title, key):
     """Horizontal bars, largest first. `ranked` has `label`, `amount`, `count`, `is_rest`.
 
@@ -138,22 +163,45 @@ def ranked_bars(ranked, label_title, key):
     text layer: the amount rides in the row label instead of at the bar's tip.
     """
     pick, hover = ui.click_and_hover("label")
-    ranked = ranked.assign(row=[f"{label}   {ui.money(amount)}" for label, amount in zip(ranked["label"], ranked["amount"])])
-    chart = alt.Chart(ranked).mark_bar(
-        size=18, cornerRadiusEnd=4, cursor="pointer",
-        # An invisible outline widens the click target: a $60 bar is only a few pixels long.
-        stroke="transparent", strokeWidth=16,  # bar 18 + outline 16 = the full 34px row
-    ).encode(
-        y=alt.Y("row:N", sort=list(ranked["row"]), title=None,
-                axis=alt.Axis(ticks=False, domain=False, labelLimit=240, labelFontSize=13,
-                              labelColor=ui.INK_SECONDARY, labelPadding=12)),
-        x=alt.X("amount:Q", axis=None),
-        # The "N others" remainder is context, not a merchant, so it does not get the accent.
-        color=alt.condition(alt.datum.is_rest, alt.value(ui.DEEMPHASIS), alt.value(ui.ACCENT)),
-        opacity=alt.when(hover).then(alt.value(1)).when(pick).then(alt.value(0.85)).otherwise(alt.value(0.3)),
-        tooltip=[alt.Tooltip("label:N", title=label_title), alt.Tooltip("amount:Q", title="Amount", format="$,.2f"),
-                 alt.Tooltip("count:Q", title="Transactions")],
-    ).add_params(pick, hover)
+    ranked = ranked.assign(
+        row=[f"{label}   {ui.money(amount)}" for label, amount in zip(ranked["label"], ranked["amount"], strict=True)]
+    )
+    chart = (
+        alt.Chart(ranked)
+        .mark_bar(
+            size=18,
+            cornerRadiusEnd=4,
+            cursor="pointer",
+            # An invisible outline widens the click target: a $60 bar is only a few pixels long.
+            stroke="transparent",
+            strokeWidth=16,  # bar 18 + outline 16 = the full 34px row
+        )
+        .encode(
+            y=alt.Y(
+                "row:N",
+                sort=list(ranked["row"]),
+                title=None,
+                axis=alt.Axis(
+                    ticks=False,
+                    domain=False,
+                    labelLimit=240,
+                    labelFontSize=13,
+                    labelColor=ui.INK_SECONDARY,
+                    labelPadding=12,
+                ),
+            ),
+            x=alt.X("amount:Q", axis=None),
+            # The "N others" remainder is context, not a merchant, so it does not get the accent.
+            color=alt.condition(alt.datum.is_rest, alt.value(ui.DEEMPHASIS), alt.value(ui.ACCENT)),
+            opacity=alt.when(hover).then(alt.value(1)).when(pick).then(alt.value(0.85)).otherwise(alt.value(0.3)),
+            tooltip=[
+                alt.Tooltip("label:N", title=label_title),
+                alt.Tooltip("amount:Q", title="Amount", format="$,.2f"),
+                alt.Tooltip("count:Q", title="Transactions"),
+            ],
+        )
+        .add_params(pick, hover)
+    )
     event = ui.show_chart(chart, height=34 * len(ranked) + 8, key=key, selection="pick")
     return ui.picked(event, "pick", "label")
 
@@ -173,16 +221,24 @@ picked_category = picked_merchant = None
 other_merchants = []
 
 with chart_col, st.container(border=True, key="card_categories"):
-    st.subheader({"Income": "Income by source", "Bills": "Bills by type", "Spending": "Spending by category",
-                  "Card payments": "Card payments"}.get(choice, "Where the money went"))
+    st.subheader(
+        {
+            "Income": "Income by source",
+            "Bills": "Bills by type",
+            "Spending": "Spending by category",
+            "Card payments": "Card payments",
+        }.get(choice, "Where the money went")
+    )
     flow_subset = flow_subset.assign(label=flow_subset["category"].map(category_label))
     by_cat = rank_by(flow_subset, "label")
     if by_cat.empty:
         st.caption("Nothing to show for this view.")
     else:
         noun = "category" if len(by_cat) == 1 else "categories"
-        st.caption(f"{ui.money(by_cat['amount'].sum())} across {len(by_cat)} {noun}, {month_name}. "
-                   "Click a bar to narrow the page to it.".replace("$", "\\$"))
+        st.caption(
+            f"{ui.money(by_cat['amount'].sum())} across {len(by_cat)} {noun}, {month_name}. "
+            "Click a bar to narrow the page to it.".replace("$", "\\$")
+        )
         picked_category = ranked_bars(by_cat, "Category", key=f"cat_{selected_month}_{choice}")
         if picked_category not in set(by_cat["label"]):
             picked_category = None
@@ -202,7 +258,8 @@ with chart_col, st.container(border=True, key="card_merchants"):
         by_merchant = rank_by(merchant_subset, "merchant", keep=8)
         st.caption(f"{scope}Names are cleaned up from bank descriptions, so grouping is approximate.")
         picked_merchant = ranked_bars(
-            by_merchant, "Merchant", key=f"merchant_{selected_month}_{choice}_{picked_category}")
+            by_merchant, "Merchant", key=f"merchant_{selected_month}_{choice}_{picked_category}"
+        )
         if picked_merchant not in set(by_merchant["label"]):
             picked_merchant = None
         listed = set(by_merchant.loc[~by_merchant["is_rest"], "label"])
@@ -222,7 +279,7 @@ with accounts_col, st.container(border=True, key="card_accounts"):
             continue
         rows.append(
             f'<div class="acct-group"><span>{group_name}</span>'
-            f'<span>{ui.money(group["last_balance"].sum())}</span></div>'
+            f"<span>{ui.money(group['last_balance'].sum())}</span></div>"
         )
         for _, acct in group.sort_values("last_balance", ascending=False).iterrows():
             badge = ""
@@ -261,39 +318,65 @@ with pace_col, st.container(border=True, key="card_pace"):
         return daily.reindex(range(1, through_day + 1), fill_value=0).cumsum()
 
     this_name, prev_name = selected_month.strftime("%B"), prev_month.strftime("%B")
-    series = [pd.DataFrame({"day": s.index, "spent": s.values, "month": name}) for s, name in [
-        (cumulative(selected_month, days_counted(selected_month, today)), this_name),
-        (cumulative(prev_month, prev_month.days_in_month), prev_name),
-    ] if s.iloc[-1] > 0]
+    series = [
+        pd.DataFrame({"day": s.index, "spent": s.values, "month": name})
+        for s, name in [
+            (cumulative(selected_month, days_counted(selected_month, today)), this_name),
+            (cumulative(prev_month, prev_month.days_in_month), prev_name),
+        ]
+        if s.iloc[-1] > 0
+    ]
     if not series:
         st.caption("No card spending in these months.")
     else:
         pace = pd.concat(series)
         names = list(pace["month"].unique())
-        colour = alt.Color("month:N", sort=[this_name, prev_name],
-                           scale=alt.Scale(domain=[this_name, prev_name], range=[ui.ACCENT, ui.DEEMPHASIS]))
-        x = alt.X("day:Q", title="Day of month", scale=alt.Scale(domain=[1, 31], nice=False),
-                  axis=alt.Axis(grid=False, values=[1, 5, 10, 15, 20, 25, 31]))
+        colour = alt.Color(
+            "month:N",
+            sort=[this_name, prev_name],
+            scale=alt.Scale(domain=[this_name, prev_name], range=[ui.ACCENT, ui.DEEMPHASIS]),
+        )
+        x = alt.X(
+            "day:Q",
+            title="Day of month",
+            scale=alt.Scale(domain=[1, 31], nice=False),
+            axis=alt.Axis(grid=False, values=[1, 5, 10, 15, 20, 25, 31]),
+        )
         y = alt.Y("spent:Q", title=None, axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False))
-        lines = alt.Chart(pace).mark_line(strokeWidth=2, strokeJoin="round", strokeCap="round").encode(
-            x=x, y=y, color=colour)
+        lines = (
+            alt.Chart(pace)
+            .mark_line(strokeWidth=2, strokeJoin="round", strokeCap="round")
+            .encode(x=x, y=y, color=colour)
+        )
         ends = pace.groupby("month").tail(1)
-        dots = alt.Chart(ends).mark_point(size=70, filled=True, opacity=1, stroke=ui.SURFACE, strokeWidth=2).encode(
-            x="day:Q", y="spent:Q", color=colour)
+        dots = (
+            alt.Chart(ends)
+            .mark_point(size=70, filled=True, opacity=1, stroke=ui.SURFACE, strokeWidth=2)
+            .encode(x="day:Q", y="spent:Q", color=colour)
+        )
 
         # Crosshair: aim at a day, not at a 2px line. One readout lists every month at that day.
         readout = pace.pivot(index="day", columns="month", values="spent").reset_index()
         for name in names:
             readout[name] = readout[name].map(lambda v: "not yet" if pd.isna(v) else f"${v:,.0f}")
-        nearest = alt.selection_point(name="crosshair", nearest=True, on="mouseover", clear="mouseout",
-                                      fields=["day"], empty=False)
-        crosshair = alt.Chart(readout).mark_rule(color=ui.INK_MUTED, strokeWidth=1).encode(
-            x="day:Q", opacity=alt.condition(nearest, alt.value(0.8), alt.value(0)),
-            tooltip=[alt.Tooltip("day:Q", title="Day of month")] + [alt.Tooltip(f"{n}:N", title=n) for n in names],
-        ).add_params(nearest)
-        markers = alt.Chart(pace).mark_point(size=60, filled=True, stroke=ui.SURFACE, strokeWidth=2).encode(
-            x="day:Q", y="spent:Q", color=colour,
-            opacity=alt.condition(nearest, alt.value(1), alt.value(0)))
+        nearest = alt.selection_point(
+            name="crosshair", nearest=True, on="mouseover", clear="mouseout", fields=["day"], empty=False
+        )
+        crosshair = (
+            alt.Chart(readout)
+            .mark_rule(color=ui.INK_MUTED, strokeWidth=1)
+            .encode(
+                x="day:Q",
+                opacity=alt.condition(nearest, alt.value(0.8), alt.value(0)),
+                tooltip=[alt.Tooltip("day:Q", title="Day of month")] + [alt.Tooltip(f"{n}:N", title=n) for n in names],
+            )
+            .add_params(nearest)
+        )
+        markers = (
+            alt.Chart(pace)
+            .mark_point(size=60, filled=True, stroke=ui.SURFACE, strokeWidth=2)
+            .encode(x="day:Q", y="spent:Q", color=colour, opacity=alt.condition(nearest, alt.value(1), alt.value(0)))
+        )
         ui.show_chart(alt.layer(lines, dots, crosshair, markers), height=230)
 
 recent = sorted(available_months)[-6:]
@@ -305,53 +388,91 @@ with flow_col, st.container(border=True, key="card_flow"):
     for m in recent:
         m_income, m_bills, m_spending = month_totals(transactions[transactions["month"] == m])
         for kind, amount in (("Income", m_income), ("Bills", m_bills), ("Spending", m_spending)):
-            flow_rows.append({"month": m.strftime("%b"), "month_key": str(m), "kind": kind,
-                              "amount": amount, "selected": m == selected_month})
+            flow_rows.append(
+                {
+                    "month": m.strftime("%b"),
+                    "month_key": str(m),
+                    "kind": kind,
+                    "amount": amount,
+                    "selected": m == selected_month,
+                }
+            )
     flow = pd.DataFrame(flow_rows)
     kinds = ["Income", "Bills", "Spending"]
     pick, hover = ui.click_and_hover("month_key")
-    flow_chart = alt.Chart(flow).mark_bar(cornerRadiusEnd=3, cursor="pointer").encode(
-        x=alt.X("month:N", sort=[m.strftime("%b") for m in recent], title=None,
-                axis=alt.Axis(labelAngle=0, ticks=False), scale=alt.Scale(paddingInner=0.25)),
-        xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
-        y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
-        color=alt.Color("kind:N", sort=kinds, scale=alt.Scale(
-            domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]])),
-        # The month under the pointer lifts to full strength, so the chart visibly responds.
-        opacity=alt.when(hover).then(alt.value(1)).when(alt.datum.selected).then(alt.value(1)).otherwise(alt.value(0.4)),
-        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("kind:N", title="Type"),
-                 alt.Tooltip("amount:Q", title="Amount", format="$,.0f")],
-    ).add_params(pick, hover)
+    flow_chart = (
+        alt.Chart(flow)
+        .mark_bar(cornerRadiusEnd=3, cursor="pointer")
+        .encode(
+            x=alt.X(
+                "month:N",
+                sort=[m.strftime("%b") for m in recent],
+                title=None,
+                axis=alt.Axis(labelAngle=0, ticks=False),
+                scale=alt.Scale(paddingInner=0.25),
+            ),
+            xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
+            y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
+            color=alt.Color(
+                "kind:N",
+                sort=kinds,
+                scale=alt.Scale(domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]]),
+            ),
+            # The month under the pointer lifts to full strength, so the chart visibly responds.
+            opacity=alt.when(hover)
+            .then(alt.value(1))
+            .when(alt.datum.selected)
+            .then(alt.value(1))
+            .otherwise(alt.value(0.4)),
+            tooltip=[
+                alt.Tooltip("month:N", title="Month"),
+                alt.Tooltip("kind:N", title="Type"),
+                alt.Tooltip("amount:Q", title="Amount", format="$,.0f"),
+            ],
+        )
+        .add_params(pick, hover)
+    )
     # The key carries the month, so each month change hands the chart a clean slate. Otherwise
     # it would remember its last click and ignore the next click on that same month.
     flow_key = f"flow_chart_{selected_month}"
-    ui.show_chart(flow_chart, height=230, key=flow_key, selection="pick",
-                  on_select=lambda: jump_to_month(flow_key))
+    ui.show_chart(flow_chart, height=230, key=flow_key, selection="pick", on_select=lambda: jump_to_month(flow_key))
 
 with daily_col, st.container(border=True, key="card_daily"):
     st.subheader("Spending per day")
     st.caption("Monthly average, card spending. Click a month to switch to it.")
-    monthly_spend = (-spend_all.groupby("month")["amount"].sum())
-    daily = pd.DataFrame({
-        "month": [m.strftime("%b") for m in monthly_spend.index],
-        "month_key": [str(m) for m in monthly_spend.index],
-        "per_day": [monthly_spend[m] / days_counted(m, today) for m in monthly_spend.index],
-        "selected": [m == selected_month for m in monthly_spend.index],
-    }).tail(6)
+    monthly_spend = -spend_all.groupby("month")["amount"].sum()
+    daily = pd.DataFrame(
+        {
+            "month": [m.strftime("%b") for m in monthly_spend.index],
+            "month_key": [str(m) for m in monthly_spend.index],
+            "per_day": [monthly_spend[m] / days_counted(m, today) for m in monthly_spend.index],
+            "selected": [m == selected_month for m in monthly_spend.index],
+        }
+    ).tail(6)
     pick, hover = ui.click_and_hover("month_key")
     this_per_day = daily.loc[daily["selected"], "per_day"]
     if not this_per_day.empty:
-        st.caption(f"{selected_month.strftime('%B')}: {ui.money(this_per_day.iloc[0], cents=True)} a day".replace("$", "\\$"))
-    daily_chart = alt.Chart(daily).mark_bar(size=22, cornerRadiusEnd=4, cursor="pointer").encode(
-        x=alt.X("month:N", sort=list(daily["month"]), title=None, axis=alt.Axis(labelAngle=0, ticks=False)),
-        y=alt.Y("per_day:Q", title=None, axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False)),
-        color=alt.condition(alt.datum.selected, alt.value(ui.ACCENT), alt.value(ui.DEEMPHASIS)),
-        opacity=alt.when(hover).then(alt.value(1)).when(alt.datum.selected).then(alt.value(1)).otherwise(alt.value(0.75)),
-        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("per_day:Q", title="Per day", format="$,.2f")],
-    ).add_params(pick, hover)
+        st.caption(
+            f"{selected_month.strftime('%B')}: {ui.money(this_per_day.iloc[0], cents=True)} a day".replace("$", "\\$")
+        )
+    daily_chart = (
+        alt.Chart(daily)
+        .mark_bar(size=22, cornerRadiusEnd=4, cursor="pointer")
+        .encode(
+            x=alt.X("month:N", sort=list(daily["month"]), title=None, axis=alt.Axis(labelAngle=0, ticks=False)),
+            y=alt.Y("per_day:Q", title=None, axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False)),
+            color=alt.condition(alt.datum.selected, alt.value(ui.ACCENT), alt.value(ui.DEEMPHASIS)),
+            opacity=alt.when(hover)
+            .then(alt.value(1))
+            .when(alt.datum.selected)
+            .then(alt.value(1))
+            .otherwise(alt.value(0.75)),
+            tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("per_day:Q", title="Per day", format="$,.2f")],
+        )
+        .add_params(pick, hover)
+    )
     daily_key = f"daily_chart_{selected_month}"
-    ui.show_chart(daily_chart, height=205, key=daily_key, selection="pick",
-                  on_select=lambda: jump_to_month(daily_key))
+    ui.show_chart(daily_chart, height=205, key=daily_key, selection="pick", on_select=lambda: jump_to_month(daily_key))
 
 # ---------- Transactions ----------
 ui.section_label("Transactions")
@@ -375,7 +496,9 @@ with st.container(border=True, key="card_transactions"):
     st.caption(summary.replace("$", "\\$"))
     st.dataframe(
         table[["posted", "description", "category", "account_name", "amount"]],
-        hide_index=True, width="stretch", height=420,
+        hide_index=True,
+        width="stretch",
+        height=420,
         column_config={
             "posted": st.column_config.DateColumn("Date", format="MMM D", width="small"),
             "description": st.column_config.TextColumn("Description", width="large"),

@@ -18,3 +18,5 @@ if ! output=$(.venv/bin/python scripts/sync.py --days 14 2>&1); then
     exit 1
 fi
 echo "$output" | grep -v -iE 'NotOpenSSLWarning|warnings\.warn'
+# Nightly backup rides along with the sync. A failed backup is worth a notification too.
+scripts/backup_db.sh || notify "Database backup failed; see logs/sync.err.log"

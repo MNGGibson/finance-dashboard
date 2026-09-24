@@ -64,5 +64,6 @@ def test_unlearned_city_before_a_clear_state_is_still_dropped():
 
 def test_add_merchants_adds_a_column():
     import pandas as pd
+
     df = pd.DataFrame({"description": DESCRIPTIONS[:2]})
     assert list(m.add_merchants(df, DESCRIPTIONS)["merchant"]) == ["Chick-Fil-A", "Chick-Fil-A"]
