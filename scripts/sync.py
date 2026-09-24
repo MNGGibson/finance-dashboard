@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Pull accounts/balances/transactions from SimpleFIN and upsert into Postgres.
 
-Intended to run daily (see launchd/com.financedashboard.sync.plist).
+Intended to run daily (see launchd/com.financedashboard.sync.plist). Exits non-zero
+when SimpleFIN reports an error or returns no accounts, so a broken bank link shows up
+as a failed job rather than a quiet stretch of stale data.
 """
 import argparse
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import psycopg2
 import requests
-from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from db import get_conn  # noqa: E402
 
 ACCESS_URL = os.environ["SIMPLEFIN_ACCESS_URL"]
 
@@ -34,16 +35,6 @@ def fetch_accounts(start_date=None):
     resp = requests.get(f"{base_url}/accounts", auth=auth, params=params, timeout=60)
     resp.raise_for_status()
     return resp.json()
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.environ.get("POSTGRES_HOST", "localhost"),
-        port=os.environ.get("POSTGRES_PORT", "5432"),
-        dbname=os.environ.get("POSTGRES_DB", "finance"),
-        user=os.environ.get("POSTGRES_USER", "finance"),
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
 
 
 def load_category_rules(conn):
@@ -124,7 +115,10 @@ def upsert(conn, data):
                         amount = EXCLUDED.amount,
                         description = EXCLUDED.description,
                         pending = EXCLUDED.pending,
-                        category = EXCLUDED.category,
+                        -- A category set by hand (scripts/set_category.py) is kept. Otherwise the
+                        -- rules win, but a rule miss never blanks a category that was already set.
+                        category = CASE WHEN transactions.category_manual THEN transactions.category
+                                        ELSE COALESCE(EXCLUDED.category, transactions.category) END,
                         raw = EXCLUDED.raw,
                         updated_at = EXCLUDED.updated_at
                     """,
@@ -143,23 +137,67 @@ def upsert(conn, data):
     conn.commit()
 
 
+def recategorize(conn):
+    """Re-run the rules over every stored transaction that was not tagged by hand.
+
+    The daily sync only re-fetches a two-week window, so a new rule, or an account whose
+    type was set after its transactions arrived, leaves older rows behind. Returns the
+    number of rows whose category changed.
+    """
+    rules = load_category_rules(conn)
+    account_types = load_account_types(conn)
+    changed = 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, account_id, description, amount, category FROM transactions "
+                    "WHERE NOT category_manual")
+        for txn_id, account_id, description, amount, current in cur.fetchall():
+            category = categorize(description, rules, account_types.get(account_id), amount)
+            if category is not None and category != current:
+                cur.execute("UPDATE transactions SET category = %s, updated_at = now() WHERE id = %s",
+                            (category, txn_id))
+                changed += 1
+    conn.commit()
+    return changed
+
+
+def response_problems(data):
+    """Print SimpleFIN's errors and say whether the run should count as failed."""
+    failed = False
+    for error in data.get("errors", []):
+        # A capped date range is a notice, not a failure; anything else means the bank link is off.
+        if "capped" in str(error).lower():
+            print("SimpleFIN notice:", error)
+        else:
+            print("SimpleFIN error:", error, file=sys.stderr)
+            failed = True
+    if not data.get("accounts"):
+        print("SimpleFIN returned no accounts; nothing synced.", file=sys.stderr)
+        failed = True
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--days", type=int, default=None,
         help="Request this many days of transaction history (bank may return less than asked for)",
     )
+    parser.add_argument(
+        "--recategorize", action="store_true",
+        help="Also re-run the category rules over every stored transaction not tagged by hand",
+    )
     args = parser.parse_args()
 
     start_date = time.time() - args.days * 86400 if args.days is not None else None
 
     data = fetch_accounts(start_date=start_date)
-    if data.get("errors"):
-        print("SimpleFIN reported errors:", data["errors"])
+    failed = response_problems(data)
 
     conn = get_conn()
     try:
         upsert(conn, data)
+        if args.recategorize:
+            print(f"Recategorized {recategorize(conn)} transactions")
     finally:
         conn.close()
 
@@ -177,6 +215,8 @@ def main():
         f"Synced {n_accounts} accounts, {n_txns} transactions "
         f"(oldest: {oldest_str}) at {datetime.now(timezone.utc).isoformat()}"
     )
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

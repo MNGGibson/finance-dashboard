@@ -66,15 +66,24 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Opens at http://localhost:8501. `app.py` handles page setup; the dashboard lives in `views/overview.py`, and `ui.py` holds the shared design tokens, stat tiles, and chart styling. Theme colours are in `.streamlit/config.toml`.
+Opens at http://localhost:8501. `app.py` handles page setup; the dashboard lives in `views/overview.py`, the accounting rules in `rules.py`, database access in `db.py`, and `ui.py` holds the shared design tokens, stat tiles, and chart styling. Dates are shown in the machine's time zone (override with `LOCAL_TZ` in `.env`). Theme colours are in `.streamlit/config.toml`.
 
 - **Dashboard** — net worth as the lead number with an assets-versus-debt bar, then a row of tiles for the selected month: income, bills, card spending, and what is left for debt and savings (the first three add up to the fourth), plus what was paid to cards. Each compares with the same stretch of the previous month. The **Show** control cross-filters the category chart, a top-merchants chart, the account list, and transactions together. Trend charts cover spending pace, monthly cash flow, and spending per day.
 
 The charts are interactive. Click a category bar and the merchant chart and transactions narrow to it; click a merchant bar and the transactions narrow again; click the bar once more, or empty space, to clear. Click a month in the cash flow or spending-per-day chart and the whole dashboard switches to that month. The spending pace chart has a crosshair that reads both months at the day under the pointer. Streamlit only reports clicks from single-layer Altair charts, so the clickable ones carry their amounts in the row labels rather than in a separate text layer.
 
+Run the tests with `pip install -r requirements-dev.txt && pytest`. They cover the merchant parser and the accounting rules in `rules.py`.
+
 Two rules keep the months honest. Card payments are shown apart from bills and outflows, because they settle card spending that is already counted. Rent posted in the last three days of a month counts toward the month it pays for. Merchant names are cleaned up from raw bank descriptions by `merchants.py`, a heuristic, so that grouping is approximate.
 
-Manage savings goals and card APRs from the CLI (Metabase has no easy write-back form for this):
+Manage categories, savings goals and card APRs from the CLI (Metabase has no easy write-back form for this):
+
+```bash
+python scripts/set_category.py --find "zelle"              # list matching transactions with ids
+python scripts/set_category.py <transaction_id> income:paycheck   # tag one by hand; syncs leave it alone
+python scripts/sync.py --recategorize                      # re-run the rules over everything not tagged by hand
+```
+
 
 ```bash
 python scripts/add_goal.py --list-accounts             # find an account id to link a goal to

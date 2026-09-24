@@ -1,24 +1,11 @@
 #!/usr/bin/env python3
 """Set the real APR on a credit card / loan account, once you know it."""
 import argparse
-import os
+import sys
 from pathlib import Path
 
-import psycopg2
-from dotenv import load_dotenv
-
-ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / ".env")
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.environ.get("POSTGRES_HOST", "localhost"),
-        port=os.environ.get("POSTGRES_PORT", "5432"),
-        dbname=os.environ.get("POSTGRES_DB", "finance"),
-        user=os.environ.get("POSTGRES_USER", "finance"),
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from db import get_conn  # noqa: E402
 
 
 def main():

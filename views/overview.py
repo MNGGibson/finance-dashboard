@@ -7,73 +7,13 @@ import pandas as pd
 import streamlit as st
 
 import ui
-from merchants import add_merchants
-from finance_data import cash_on_hand_for_month, income_mask, load_accounts, load_balance_history, load_transactions
+from finance_data import cash_on_hand_for_month, load_accounts, load_balance_history, load_transactions
+from rules import (
+    CASH_TYPES, category_label, days_counted, effective_date, income_mask, is_bill, is_card_payment,
+    is_spending, is_transfer, month_totals, net_worth_as_of, rank_by,
+)
 
 FILTERS = ["All", "Income", "Bills", "Spending", "Card payments", "Cash", "Debt"]
-CASH_TYPES = ["checking", "savings"]
-
-
-CARD_PAYMENT = "bill:debt_payment"
-
-
-def is_card_payment(txns):
-    return txns["category"] == CARD_PAYMENT
-
-
-def is_bill(txns):
-    """Fixed bills paid from cash. Card payments are tracked separately: they settle
-    card spending that is already counted, so adding both would count dollars twice."""
-    return txns["category"].str.startswith("bill:", na=False) & ~is_card_payment(txns)
-
-
-def is_spending(txns):
-    return txns["category"] == "spending:discretionary"
-
-
-def is_transfer(txns):
-    return txns["category"].str.startswith("transfer:", na=False)
-
-
-def month_totals(txns):
-    income = txns.loc[income_mask(txns), "amount"].sum()
-    bills = -txns.loc[is_bill(txns), "amount"].sum()
-    spending = -txns.loc[is_spending(txns), "amount"].sum()
-    return income, bills, spending
-
-
-def effective_date(txns):
-    """The date a transaction counts toward. Rent is due on the 1st but often leaves the
-    bank a day or two early, which would give one month two rents and the next month
-    none. Rent posted in the last three days of a month counts for the month it pays for."""
-    posted = txns["posted"]
-    early_rent = (txns["category"] == "bill:rent") & (posted.dt.days_in_month - posted.dt.day < 3)
-    next_month_start = (posted + pd.offsets.MonthBegin(1)).dt.normalize()
-    return posted.where(~early_rent, next_month_start)
-
-
-def category_label(category):
-    """'bill:debt_payment' -> 'Debt payment'."""
-    if pd.isna(category) or ":" not in category:
-        return "Uncategorized"
-    return category.split(":", 1)[1].replace("_", " ").capitalize()
-
-
-def days_counted(period):
-    """Full days in the month, or days elapsed so far if it's the current month."""
-    today = pd.Timestamp.today().normalize()
-    if period == today.to_period("M"):
-        return today.day
-    return period.days_in_month
-
-
-def net_worth_as_of(history, cutoff):
-    """Net worth from the latest snapshot of each account on or before `cutoff`."""
-    past = history[history["as_of"] <= cutoff]
-    if past.empty:
-        return None, None
-    latest = past.sort_values("as_of").groupby("name").tail(1)
-    return float(latest["balance"].sum()), latest["as_of"].max()
 
 
 # ---------- Data ----------
@@ -184,7 +124,7 @@ elif choice == "Debt":
     filtered_txns = month_txns[month_txns["account_type"] == "credit_card"]
     filtered_accounts = accounts[accounts["account_type"] == "credit_card"]
 if choice in ("Income", "Bills", "Spending", "Card payments"):
-    filtered_accounts = accounts[accounts["name"].isin(filtered_txns["account_name"].unique())]
+    filtered_accounts = accounts[accounts["id"].isin(filtered_txns["account_id"].unique())]
 
 chart_col, accounts_col = st.columns([3, 2])
 
@@ -216,18 +156,6 @@ def ranked_bars(ranked, label_title, key):
     ).add_params(pick, hover)
     event = ui.show_chart(chart, height=34 * len(ranked) + 8, key=key, selection="pick")
     return ui.picked(event, "pick", "label")
-
-
-def rank_by(txns, column, keep=None):
-    ranked = (txns.groupby(column)["amount"].agg(amount=lambda a: abs(a.sum()), count="size")
-              .sort_values("amount", ascending=False).reset_index().rename(columns={column: "label"}))
-    ranked["is_rest"] = False
-    if keep is not None and len(ranked) > keep:
-        rest = ranked.iloc[keep:]
-        ranked = pd.concat([ranked.iloc[:keep], pd.DataFrame({
-            "label": [f"{len(rest)} others"], "amount": [rest["amount"].sum()],
-            "count": [rest["count"].sum()], "is_rest": [True]})])
-    return ranked
 
 
 if choice == "Income":
@@ -271,7 +199,6 @@ with chart_col, st.container(border=True, key="card_merchants"):
     if merchant_subset.empty:
         st.caption("Nothing to show for this view.")
     else:
-        merchant_subset = add_merchants(merchant_subset, transactions["description"])
         by_merchant = rank_by(merchant_subset, "merchant", keep=8)
         st.caption(f"{scope}Names are cleaned up from bank descriptions, so grouping is approximate.")
         picked_merchant = ranked_bars(
@@ -335,7 +262,7 @@ with pace_col, st.container(border=True, key="card_pace"):
 
     this_name, prev_name = selected_month.strftime("%B"), prev_month.strftime("%B")
     series = [pd.DataFrame({"day": s.index, "spent": s.values, "month": name}) for s, name in [
-        (cumulative(selected_month, days_counted(selected_month)), this_name),
+        (cumulative(selected_month, days_counted(selected_month, today)), this_name),
         (cumulative(prev_month, prev_month.days_in_month), prev_name),
     ] if s.iloc[-1] > 0]
     if not series:
@@ -408,7 +335,7 @@ with daily_col, st.container(border=True, key="card_daily"):
     daily = pd.DataFrame({
         "month": [m.strftime("%b") for m in monthly_spend.index],
         "month_key": [str(m) for m in monthly_spend.index],
-        "per_day": [monthly_spend[m] / days_counted(m) for m in monthly_spend.index],
+        "per_day": [monthly_spend[m] / days_counted(m, today) for m in monthly_spend.index],
         "selected": [m == selected_month for m in monthly_spend.index],
     }).tail(6)
     pick, hover = ui.click_and_hover("month_key")
@@ -436,7 +363,6 @@ with st.container(border=True, key="card_transactions"):
         table = table[table["category"] == picked_category]
         narrowed_to.append(picked_category)
     if picked_merchant:
-        table = add_merchants(table, transactions["description"])
         wanted = other_merchants if picked_merchant not in set(table["merchant"]) else [picked_merchant]
         table = table[table["merchant"].isin(wanted)]
         narrowed_to.append(picked_merchant)

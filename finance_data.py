@@ -1,78 +1,44 @@
-"""Shared Postgres access for the Streamlit app and its pages."""
-import os
-from pathlib import Path
-
+"""Cached data loaders for the Streamlit app."""
 import pandas as pd
-import psycopg2
 import streamlit as st
-from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")
-
-
-def get_conn():
-    return psycopg2.connect(
-        host=os.environ.get("POSTGRES_HOST", "localhost"),
-        port=os.environ.get("POSTGRES_PORT", "5432"),
-        dbname=os.environ.get("POSTGRES_DB", "finance"),
-        user=os.environ.get("POSTGRES_USER", "finance"),
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+from db import query, to_local_naive
+from merchants import add_merchants
+from rules import income_mask  # noqa: F401  (re-exported: the app's income definition lives in rules)
 
 
 @st.cache_data(ttl=300)
 def load_accounts():
-    conn = get_conn()
-    df = pd.read_sql(
+    return query(
         "SELECT id, name, org_name, account_type, last_balance, apr, promo_apr_expires, post_promo_apr "
-        "FROM accounts", conn,
+        "FROM accounts"
     )
-    conn.close()
-    return df
 
 
 @st.cache_data(ttl=300)
 def load_transactions(months=12):
-    conn = get_conn()
-    df = pd.read_sql(
+    """Transactions with their account, dated in the local zone, plus a cleaned merchant
+    name. Merchants are derived here, once per load, rather than on every rerun."""
+    df = query(
         "SELECT t.posted, t.amount, t.description, t.category, t.pending, "
-        "a.name AS account_name, a.account_type "
+        "a.id AS account_id, a.name AS account_name, a.account_type "
         "FROM transactions t JOIN accounts a ON a.id = t.account_id "
         "WHERE t.posted >= now() - (%(months)s || ' months')::interval "
         "ORDER BY t.posted DESC",
-        conn, params={"months": months},
+        {"months": months},
     )
-    conn.close()
-    df["posted"] = pd.to_datetime(df["posted"]).dt.tz_localize(None)
-    return df
-
-
-def income_mask(txns):
-    """Boolean mask of the rows in a load_transactions() frame that count as income.
-
-    The single definition of income for the app: money arriving in a non-credit-card
-    account that isn't a transfer. Positive amounts on credit cards are payments
-    received, statement credits and points redemptions -- not income.
-    """
-    return (
-        (txns["amount"] > 0)
-        & (txns["account_type"] != "credit_card")
-        & ~txns["category"].str.startswith("transfer:", na=False)
-    )
+    df["posted"] = to_local_naive(df["posted"])
+    return add_merchants(df, df["description"])
 
 
 @st.cache_data(ttl=300)
 def load_balance_history():
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT bs.as_of, bs.balance, a.name, a.account_type "
+    df = query(
+        "SELECT bs.as_of, bs.balance, a.id AS account_id, a.name, a.account_type "
         "FROM balance_snapshots bs JOIN accounts a ON a.id = bs.account_id "
-        "ORDER BY bs.as_of",
-        conn,
+        "ORDER BY bs.as_of"
     )
-    conn.close()
-    df["as_of"] = pd.to_datetime(df["as_of"]).dt.tz_localize(None)
+    df["as_of"] = to_local_naive(df["as_of"])
     return df
 
 

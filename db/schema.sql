@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount      NUMERIC(14, 2) NOT NULL,
     description TEXT,
     pending     BOOLEAN NOT NULL DEFAULT false,
-    -- e.g. income:paycheck, income:uber, expense:rent, expense:debt_payment; set by category_rules
+    -- e.g. income:paycheck, income:uber, bill:rent, bill:debt_payment; set by category_rules
     category    TEXT,
+    -- true when set by hand (scripts/set_category.py); the sync then leaves category alone
+    category_manual BOOLEAN NOT NULL DEFAULT false,
     raw         JSONB,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -61,3 +63,6 @@ CREATE TABLE IF NOT EXISTS goals (
     starting_amount    NUMERIC(14, 2) NOT NULL DEFAULT 0,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Existing databases created before category_manual existed.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_manual BOOLEAN NOT NULL DEFAULT false;
