@@ -508,4 +508,12 @@ with st.container(border=True, key="card_transactions"):
         },
     )
 
-st.caption("Data refreshes every 5 minutes from the local Postgres database, synced daily via scripts/sync.py.")
+last_sync = accounts["updated_at"].max()
+age_hours = (pd.Timestamp.now() - last_sync).total_seconds() / 3600
+freshness = f"Data as of {last_sync.strftime('%a %b %-d, %-I:%M %p')}"
+if age_hours > 12:
+    # Four syncs a day are scheduled; a gap this long means the Mac was off or a run failed.
+    freshness += f" ({age_hours:.0f} hours ago; the sync runs every 6 hours, so check logs/sync.log)"
+st.caption(
+    f"{freshness}. Balances and transactions come from the bank feed every 6 hours; the page re-reads them every 5 minutes."
+)

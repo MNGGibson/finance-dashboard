@@ -10,9 +10,13 @@ from rules import income_mask  # noqa: F401  (re-exported: the app's income defi
 
 @st.cache_data(ttl=300)
 def load_accounts():
-    return query(
-        "SELECT id, name, org_name, account_type, last_balance, apr, promo_apr_expires, post_promo_apr FROM accounts"
+    """Accounts with their latest balance. `updated_at` is when the last sync touched them."""
+    df = query(
+        "SELECT id, name, org_name, account_type, last_balance, apr, promo_apr_expires, post_promo_apr, updated_at "
+        "FROM accounts"
     )
+    df["updated_at"] = to_local_naive(df["updated_at"])
+    return df
 
 
 @st.cache_data(ttl=300)

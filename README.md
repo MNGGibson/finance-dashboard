@@ -6,7 +6,7 @@ Pulls balances & transactions from linked bank accounts via [SimpleFIN](https://
 
 - **A Streamlit app** — a live dashboard with net worth, cross-filtering monthly KPIs, spending by category, spending trends, and promotional-APR deadlines flagged on the accounts that have them
 
-It reads from a local Postgres database, kept up to date by a daily sync script.
+It reads from a local Postgres database, kept up to date by a sync script that pulls from the bank feed every six hours.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design, data model, and the reasoning behind the key decisions.
 
