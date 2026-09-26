@@ -1,0 +1,31 @@
+name: Back up the database
+
+# Nightly encrypted dump kept as a workflow artifact for 90 days, on top of the database
+# host's own restore window. Decrypt with: gpg --decrypt finance-<date>.sql.gz.gpg
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dump and encrypt
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >/dev/null
+          stamp=$(date -u +%Y-%m-%d)
+          pg_dump "$DATABASE_URL" | gzip > "finance-$stamp.sql.gz"
+          gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$BACKUP_PASSPHRASE" "finance-$stamp.sql.gz"
+          rm "finance-$stamp.sql.gz"
+          ls -la finance-*.gpg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finance-db-backup-${{ github.run_id }}
+          path: finance-*.sql.gz.gpg
+          retention-days: 90
+          if-no-files-found: error

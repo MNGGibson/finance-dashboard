@@ -119,6 +119,21 @@ Those alerts can only fire if the sync actually runs. For the case where the Mac
 
 Cash-on-hand snapshots (used by the Overview page to show what cash looked like in *past* months, not just today) come from whichever daily sync lands closest to the 15th of each month — no separate job needed, this just falls out of running the sync daily.
 
+## Run it in the cloud instead (optional)
+
+The same code runs on three free managed services, so nothing depends on one machine: the database on [Neon](https://neon.com), the sync and nightly backup on GitHub Actions, and the dashboard on [Streamlit Community Cloud](https://streamlit.io/cloud) as a private app that viewers open with a Google sign-in. Steps, in order:
+
+1. **Neon.** Create a project. In its settings under Networking, make sure public access is allowed and no IP allow list is set (the sync and the app connect from changing addresses). Copy the connection string into `.env` as `DATABASE_URL="..."`, quotes included, since it contains `&`. From then on the Mac's own dashboard, sync and backup use the hosted database too. Run the one-time copy of your data and create the read-only user:
+   ```bash
+   DATABASE_URL="<neon owner connection string>" scripts/copy_to_cloud.sh
+   psql "<neon owner connection string>" -f db/readonly_user.sql   # edit the password (and database name) in the file first
+   ```
+2. **GitHub.** In the repository settings, add secrets `DATABASE_URL` (the owner string), `SIMPLEFIN_ACCESS_URL` (from `.env`), `BACKUP_PASSPHRASE` (any long random phrase; keep it in a password manager, it decrypts the backups) and optionally `HEALTHCHECK_URL`. The `Sync bank data` workflow then runs four times a day and `Back up the database` nightly; run each once by hand from the Actions tab to confirm.
+3. **Streamlit Community Cloud.** Deploy `app.py` from this repository. In the app's secrets, set `DATABASE_URL` to the read-only user's connection string, `LOCAL_TZ` (for example `America/New_York`) and `ALLOWED_VIEWERS` to your email. Make the app **private** and add the same email as a viewer.
+4. Turn on two-factor sign-in for Google, GitHub and Neon. Then the Mac's services can be stopped (`launchctl bootout ...`) or left running as a spare; both copies can sync the same bank feed within the 24-pull daily limit.
+
+Restore a backup: download the artifact from the Actions run, then `gpg --decrypt finance-<date>.sql.gz.gpg | gunzip | psql "$DATABASE_URL"`.
+
 ## Development
 
 ```bash

@@ -16,7 +16,15 @@ mkdir -p "$BACKUP_DIR" || exit 1
 
 stamp=$(date +%Y-%m-%d)
 file="$BACKUP_DIR/finance-$stamp.sql.gz"
-if docker exec finance-postgres pg_dump -U "${POSTGRES_USER:-finance}" "${POSTGRES_DB:-finance}" | gzip > "$file.tmp"; then
+dump() {
+    if [ -n "${DATABASE_URL:-}" ]; then
+        # Hosted database. The client must not be older than the server, so use a current image.
+        docker run -i --rm postgres:18 pg_dump "$DATABASE_URL"
+    else
+        docker exec finance-postgres pg_dump -U "${POSTGRES_USER:-finance}" "${POSTGRES_DB:-finance}"
+    fi
+}
+if dump | gzip > "$file.tmp"; then
     mv "$file.tmp" "$file"
     echo "Backed up to $file ($(du -h "$file" | cut -f1))"
 else

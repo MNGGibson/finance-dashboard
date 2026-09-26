@@ -34,6 +34,9 @@ Runs in Docker, data lives in a named volume (never in the repo). Postgres rathe
 **Presentation — Streamlit app**
 Off-the-shelf BI tools can show and filter *stored* data, but can't cross-filter a whole page from one control so that every chart, list and table reconciles to the number you picked, or compare a partial month against the same stretch of the previous one. The dashboard exists for that. An earlier debt-payoff forecasting page was removed as not useful in practice; it is preserved on the `forecasting-archive` branch.
 
+**Hosted variant**
+The same code runs with `DATABASE_URL` pointing at a managed Postgres (Neon), the sync as a scheduled GitHub Actions workflow with the bank token in the repository's secret store, and the dashboard on Streamlit Community Cloud as a private app. Community Cloud signs viewers in; the app also checks the signed-in email against `ALLOWED_VIEWERS` as a second lock, and connects with a read-only database user so the web app cannot alter history.
+
 **Backups — `scripts/backup_db.sh`**
 Runs once a day, on the first sync that finds no dump for the date: a compressed `pg_dump` into a local folder, thirty kept, plus the category rules as SQL, with the newest mirrored to iCloud Drive by plain shell redirection (the one write macOS lets a background job make there). SimpleFIN only serves 90 days of history, so the database is the only copy of anything older.
 
