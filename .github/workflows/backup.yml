@@ -27,6 +27,15 @@ jobs:
           gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$BACKUP_PASSPHRASE" "finance-$stamp.sql.gz"
           rm "finance-$stamp.sql.gz"
           ls -la finance-*.gpg
+      - name: Verify the backup opens and holds every table
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          tables=$(gpg --batch --quiet --pinentry-mode loopback --passphrase "$BACKUP_PASSPHRASE" --decrypt finance-*.sql.gz.gpg \
+                   | gunzip | grep -cE "^COPY public\.(accounts|transactions|category_rules|balance_snapshots) ")
+          echo "tables with data in the backup: $tables"
+          [ "$tables" -eq 4 ] || { echo "Backup is missing tables" >&2; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: finance-db-backup-${{ github.run_id }}
