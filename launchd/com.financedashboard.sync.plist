@@ -15,13 +15,15 @@
     <key>WorkingDirectory</key>
     <string>/path/to/finance-dashboard</string>
 
+    <!-- Every 6 hours at a random-looking minute, as SimpleFIN suggests. Its limit is 24
+         pulls a day; four catches each bank's daily refresh within hours. -->
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>7</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <array>
+        <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>17</integer></dict>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>17</integer></dict>
+        <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>17</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>17</integer></dict>
+    </array>
 
     <key>StandardOutPath</key>
     <string>/path/to/finance-dashboard/logs/sync.log</string>

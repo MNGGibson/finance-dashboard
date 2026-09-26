@@ -1,5 +1,5 @@
 #!/bin/bash
-# launchd entry point for the daily sync: make sure Docker is up, run the sync, back up,
+# launchd entry point for the sync (every 6 hours): make sure Docker is up, run the sync, back up,
 # and report. Failures raise an email/macOS notification (scripts/notify.py). Every run
 # also checks in with a healthchecks.io monitor when HEALTHCHECK_URL is set in .env: if no
 # check-in arrives by the deadline, that service emails you from outside this Mac, which
@@ -35,8 +35,12 @@ if ! output=$(.venv/bin/python scripts/sync.py --days 14 2>&1); then
 fi
 summary=$(echo "$output" | grep -v -iE 'NotOpenSSLWarning|warnings\.warn')
 echo "$summary"
-# Nightly backup rides along with the sync. A failed backup is worth a notification too.
-if scripts/backup_db.sh; then
+# The sync runs every 6 hours; the backup once a day, on the first run that finds no dump
+# for today (so a Mac asleep at 7am still gets one). A failed backup is worth a notification.
+BACKUP_DIR=${BACKUP_DIR:-$HOME/Backups/finance-dashboard}
+if [ -e "$BACKUP_DIR/finance-$(date +%Y-%m-%d).sql.gz" ]; then
+    checkin "" "$summary"
+elif scripts/backup_db.sh; then
     checkin "" "$summary"
 else
     .venv/bin/python scripts/notify.py "Database backup failed" "See logs/sync.err.log on this Mac."
