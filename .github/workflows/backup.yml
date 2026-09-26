@@ -17,9 +17,13 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >/dev/null
+          set -euo pipefail
           stamp=$(date -u +%Y-%m-%d)
-          pg_dump "$DATABASE_URL" | gzip > "finance-$stamp.sql.gz"
+          # The client must not be older than the server; the runner's apt client is, so use a current image.
+          docker run --rm postgres:18 pg_dump "$DATABASE_URL" | gzip > "finance-$stamp.sql.gz"
+          size=$(stat -c %s "finance-$stamp.sql.gz")
+          echo "dump: $size bytes"
+          [ "$size" -gt 10000 ] || { echo "Dump is implausibly small; refusing to store it" >&2; exit 1; }
           gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase "$BACKUP_PASSPHRASE" "finance-$stamp.sql.gz"
           rm "finance-$stamp.sql.gz"
           ls -la finance-*.gpg
