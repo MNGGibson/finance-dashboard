@@ -35,7 +35,7 @@ Runs in Docker, data lives in a named volume (never in the repo). Postgres rathe
 Off-the-shelf BI tools can show and filter *stored* data, but can't cross-filter a whole page from one control so that every chart, list and table reconciles to the number you picked, or compare a partial month against the same stretch of the previous one. The dashboard exists for that. An earlier debt-payoff forecasting page was removed as not useful in practice; it is preserved on the `forecasting-archive` branch.
 
 **Backups — `scripts/backup_db.sh`**
-Runs after each daily sync: a compressed `pg_dump` into iCloud Drive (or any `BACKUP_DIR`), thirty kept, plus the category rules as SQL. SimpleFIN only serves 90 days of history, so the database is the only copy of anything older.
+Runs after each daily sync: a compressed `pg_dump` into a local folder, thirty kept, plus the category rules as SQL, with the newest mirrored to iCloud Drive by plain shell redirection (the one write macOS lets a background job make there). SimpleFIN only serves 90 days of history, so the database is the only copy of anything older.
 
 **Automation — launchd**
 Two launchd agents: one keeps the dashboard running on localhost:8511, one runs the sync every morning. Both go through `scripts/ensure_docker.sh`, which starts Docker Desktop if it is not running, so a reboot does not leave either without a database. The sync wrapper raises a macOS notification when a run fails.

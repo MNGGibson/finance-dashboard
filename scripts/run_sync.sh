@@ -1,22 +1,44 @@
 #!/bin/bash
-# launchd entry point for the daily sync: make sure Docker is up, run the sync, and
-# raise a macOS notification if anything fails, so a dead bank link is noticed that morning.
+# launchd entry point for the daily sync: make sure Docker is up, run the sync, back up,
+# and report. Failures raise an email/macOS notification (scripts/notify.py). Every run
+# also checks in with a healthchecks.io monitor when HEALTHCHECK_URL is set in .env: if no
+# check-in arrives by the deadline, that service emails you from outside this Mac, which
+# covers the Mac being off or asleep all day, not just a sync that ran and failed.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-notify() {
-    osascript -e "display notification \"$1\" with title \"Finance dashboard\" subtitle \"Daily sync failed\"" 2>/dev/null
-}
-if ! scripts/ensure_docker.sh; then
-    notify "Docker did not start, so no bank data was pulled."
-    exit 1
+# Read the ping URL from .env unless the environment already provides one.
+if [ -z "${HEALTHCHECK_URL:-}" ] && [ -f .env ]; then
+    HEALTHCHECK_URL=$(grep -E '^HEALTHCHECK_URL=' .env | tail -1 | cut -d= -f2- | tr -d '"'"'"' ')
 fi
+HEALTHCHECK_URL=${HEALTHCHECK_URL:-}
+
+checkin() {
+    # $1: "" (success), "start" or "fail". $2: optional text sent as the body.
+    [ -n "$HEALTHCHECK_URL" ] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null --data-raw "${2:-}" "${HEALTHCHECK_URL%/}${1:+/$1}" \
+        || echo "healthchecks.io check-in (${1:-success}) did not go through" >&2
+}
+fail() {
+    # Email (when configured in .env) plus a macOS notification, and tell the monitor.
+    .venv/bin/python scripts/notify.py "Daily sync failed" "$1"
+    checkin fail "$1"
+    exit 1
+}
+
+checkin start
+scripts/ensure_docker.sh || fail "Docker did not start, so no bank data was pulled."
 if ! output=$(.venv/bin/python scripts/sync.py --days 14 2>&1); then
     echo "$output"
     # Last non-warning line is the reason (SimpleFIN error, no accounts, exception).
     reason=$(echo "$output" | grep -v -iE 'warning|warnings\.warn' | tail -1 | cut -c1-120)
-    notify "${reason:-see logs/sync.err.log}"
-    exit 1
+    fail "${reason:-see logs/sync.err.log}"
 fi
-echo "$output" | grep -v -iE 'NotOpenSSLWarning|warnings\.warn'
+summary=$(echo "$output" | grep -v -iE 'NotOpenSSLWarning|warnings\.warn')
+echo "$summary"
 # Nightly backup rides along with the sync. A failed backup is worth a notification too.
-scripts/backup_db.sh || notify "Database backup failed; see logs/sync.err.log"
+if scripts/backup_db.sh; then
+    checkin "" "$summary"
+else
+    .venv/bin/python scripts/notify.py "Database backup failed" "See logs/sync.err.log on this Mac."
+    checkin fail "Sync ok, backup failed"
+fi
