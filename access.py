@@ -1,9 +1,13 @@
 """Who may view the dashboard when it is hosted.
 
-Streamlit Community Cloud signs viewers in before a private app loads and exposes the
-viewer's email as st.user.email. With ALLOWED_VIEWERS set (comma-separated emails), the
-app refuses anyone else even if it were made public by mistake. Unset, as on the local
-Mac, everything is allowed.
+With ALLOWED_VIEWERS set (comma-separated emails), the app checks the signed-in viewer's
+email (st.user.email) and refuses anyone else. It fails closed: if no email is visible,
+nobody gets in. Unset, as on the local Mac, everything is allowed.
+
+st.user.email is only populated when the app itself runs a sign-in, that is Streamlit's
+[auth] configuration with an identity provider such as Google. On Streamlit Community
+Cloud without [auth], the viewer's email is not exposed to the app (since Streamlit
+1.42), so leave ALLOWED_VIEWERS unset there and rely on the private-app viewer list.
 """
 
 import db
