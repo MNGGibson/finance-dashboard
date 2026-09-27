@@ -6,7 +6,7 @@ def test_database_url_wins_and_requires_tls(monkeypatch):
     kwargs = db.connection_kwargs()
     assert kwargs["dsn"].startswith("postgresql://")
     assert kwargs["sslmode"] == "require"
-    assert kwargs["connect_timeout"] == 10
+    assert kwargs["connect_timeout"] == 30  # a hosted database may need to wake up
 
 
 def test_database_url_keeps_its_own_sslmode(monkeypatch):
@@ -20,6 +20,7 @@ def test_discrete_settings_for_local_docker(monkeypatch):
     monkeypatch.setenv("POSTGRES_HOST", "127.0.0.1")
     kwargs = db.connection_kwargs()
     assert kwargs["host"] == "127.0.0.1" and kwargs["dbname"] == "finance" and kwargs["password"] == "x"
+    assert kwargs["connect_timeout"] == 10
 
 
 def test_setting_prefers_environment(monkeypatch):

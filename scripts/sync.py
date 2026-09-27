@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import psycopg2
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -198,13 +199,23 @@ def main():
     data = fetch_accounts(start_date=start_date)
     failed = response_problems(data)
 
-    conn = get_conn()
-    try:
-        upsert(conn, data)
-        if args.recategorize:
-            print(f"Recategorized {recategorize(conn)} transactions")
-    finally:
-        conn.close()
+    # A hosted database that scales to zero can drop the first connection while it wakes
+    # (psycopg2: "server closed the connection unexpectedly"). Try again before giving up.
+    for attempt in range(1, 4):
+        conn = get_conn()
+        try:
+            upsert(conn, data)
+            if args.recategorize:
+                print(f"Recategorized {recategorize(conn)} transactions")
+            break
+        except psycopg2.OperationalError as error:
+            if attempt == 3:
+                raise
+            reason = str(error).strip().splitlines()[0]
+            print(f"Database connection dropped ({reason}); retrying in {5 * attempt}s")
+            time.sleep(5 * attempt)
+        finally:
+            conn.close()
 
     n_accounts = len(data.get("accounts", []))
     n_txns = sum(len(a.get("transactions", [])) for a in data.get("accounts", []))

@@ -57,8 +57,9 @@ def connection_kwargs():
         }
         if kwargs["password"] is None:
             raise KeyError("POSTGRES_PASSWORD (or DATABASE_URL) is not set")
-    # A stalled database should fail the caller quickly, not hang it forever.
-    kwargs["connect_timeout"] = 10
+    # A stalled database should fail the caller quickly, not hang it forever; a hosted one
+    # that scales to zero needs a few seconds to wake, so it gets longer.
+    kwargs["connect_timeout"] = 30 if url else 10
     return kwargs
 
 
