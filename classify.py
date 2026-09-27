@@ -291,7 +291,7 @@ KEYWORDS = [
 ]
 
 DEFAULT = "spending:discretionary"  # unclassified card spending, until a layer above catches it
-MODEL = "gemini-2.5-flash-lite"
+MODEL = "gemini-flash-lite-latest"  # an alias Google keeps pointing at the current free Flash-Lite model
 
 
 def merchant_key(payee, description, cities=frozenset()):
