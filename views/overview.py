@@ -1,4 +1,9 @@
-"""Overview page: where things stand today, and income/spending for a selected month."""
+"""The dashboard: slicers at the top, four totals, charts that select, and the transactions.
+
+Every visual obeys the slicers (date range, accounts, categories, merchant search). Clicking
+a bar narrows what sits below it, clicking it again deselects, and "Clear" resets. State
+lives in st.session_state under the keys named here so chart clicks can drive the slicers.
+"""
 
 import html
 from datetime import date
@@ -11,171 +16,214 @@ import ui
 from finance_data import cash_on_hand_for_month, load_accounts, load_balance_history, load_transactions
 from rules import (
     CASH_TYPES,
+    RANGE_PRESETS,
     category_label,
-    days_counted,
+    date_range_for,
+    describe_range,
     effective_date,
+    in_range,
     income_mask,
     is_bill,
     is_card_payment,
-    is_spending,
     is_transfer,
     month_totals,
+    monthly_totals,
     net_worth_as_of,
+    previous_range,
     rank_by,
 )
-
-FILTERS = ["All", "Income", "Bills", "Spending", "Card payments", "Cash", "Debt"]
-
 
 # ---------- Data ----------
 accounts = load_accounts()
 transactions = load_transactions(months=12)
 transactions["effective"] = effective_date(transactions)
 transactions["month"] = transactions["effective"].dt.to_period("M")
-
+transactions["label"] = transactions["category"].map(category_label)
 today = pd.Timestamp.today().normalize()
-available_months = sorted(transactions["month"].unique(), reverse=True)
-month_labels = {m: m.strftime("%B %Y") for m in available_months}
 
-# ---------- Header: title + the one filter row that scopes everything below ----------
-title_col, month_col = st.columns([3, 1], vertical_alignment="bottom")
+# ---------- State ----------
+state = st.session_state
+state.setdefault("range_preset", "This month")
+state.setdefault("custom_range", (today.replace(day=1).date(), today.date()))
+state.setdefault("reset_token", 0)  # bumped by Clear: chart keys change, so their selections reset
+
+
+def set_range(start, end):
+    state["range_preset"] = "Custom"
+    state["custom_range"] = (start.date(), end.date())
+
+
+def clear_selections():
+    state["reset_token"] += 1
+
+
+def reset_all():
+    # Set the widgets' values rather than deleting the keys, so every control repaints empty.
+    state["range_preset"] = "This month"
+    state["custom_range"] = (today.replace(day=1).date(), today.date())
+    state["accounts_pick"] = []
+    state["categories_pick"] = []
+    state["merchant_search"] = ""
+    clear_selections()
+
+
+# ---------- Header and slicers: one quiet row, everything below obeys it ----------
+title_col, reset_col = st.columns([6, 1], vertical_alignment="center")
 title_col.title("Overview")
-selected_month = month_col.selectbox(
-    "Month",
-    options=available_months,
-    format_func=lambda m: month_labels[m],
-    index=0,
-    label_visibility="collapsed",
-    key="month_select",
-)
-month_name = month_labels[selected_month]
-month_txns = transactions[transactions["month"] == selected_month]
+reset_col.button("Reset", on_click=reset_all, type="tertiary", width="stretch")
 
-# ---------- Hero: net worth, and what it is made of ----------
+range_col, account_col, category_col, merchant_col = st.columns([3.2, 1.6, 1.6, 1.6], vertical_alignment="center")
+with range_col:
+    short = {
+        "This month": "This month",
+        "Last month": "Last month",
+        "Last 3 months": "3 months",
+        "Year to date": "YTD",
+        "Custom": "Custom",
+    }
+    st.pills("Date range", RANGE_PRESETS, key="range_preset", label_visibility="collapsed", format_func=short.get)
+with account_col:
+    picked_accounts = st.multiselect(
+        "Accounts",
+        list(accounts.sort_values("account_type")["name"]),
+        key="accounts_pick",
+        placeholder="All accounts",
+        label_visibility="collapsed",
+    )
+with category_col:
+    picked_categories = st.multiselect(
+        "Categories",
+        sorted(transactions["label"].unique()),
+        key="categories_pick",
+        placeholder="All categories",
+        label_visibility="collapsed",
+    )
+with merchant_col:
+    merchant_search = st.text_input(
+        "Merchant search", key="merchant_search", placeholder="Search merchants", label_visibility="collapsed"
+    ).strip()
+preset = state["range_preset"] or "This month"
+if preset == "Custom":
+    st.date_input("Custom range", key="custom_range", label_visibility="collapsed", format="MM/DD/YYYY", width=300)
+start, end = date_range_for(preset, today, state.get("custom_range"))
+
+# ---------- Apply the slicers ----------
+sliced = transactions[in_range(transactions, start, end)]
+prev_start, prev_end = previous_range(start, end, today)
+previous = transactions[in_range(transactions, prev_start, prev_end)]
+sliced_accounts = accounts
+if picked_accounts:
+    sliced = sliced[sliced["account_name"].isin(picked_accounts)]
+    previous = previous[previous["account_name"].isin(picked_accounts)]
+    sliced_accounts = accounts[accounts["name"].isin(picked_accounts)]
+if picked_categories:
+    sliced = sliced[sliced["label"].isin(picked_categories)]
+    previous = previous[previous["label"].isin(picked_categories)]
+
+
+def matches_search(df):
+    needle = merchant_search.lower()
+    return df["merchant"].str.lower().str.contains(needle, regex=False) | df["description"].str.lower().str.contains(
+        needle, regex=False, na=False
+    )
+
+
+if merchant_search:
+    sliced = sliced[matches_search(sliced)]
+    previous = previous[matches_search(previous)]
+# Trend series: 6 months ending with the range's last month, under the same account/category/merchant slicers.
+history = transactions
+if picked_accounts:
+    history = history[history["account_name"].isin(picked_accounts)]
+if picked_categories:
+    history = history[history["label"].isin(picked_categories)]
+if merchant_search:
+    history = history[matches_search(history)]
+
+range_text = describe_range(start, end)
+prev_text = describe_range(prev_start, prev_end)
+# "Aug 1–26": the year is implied when it matches the range's; kept when comparing with last year.
+prev_short = prev_text.rsplit(",", 1)[0] if "," in prev_text and prev_end.year == end.year else prev_text
+
+# ---------- Hero: net worth today (not sliced: it is a point in time) ----------
 net_worth = accounts["last_balance"].sum()
 assets = accounts.loc[accounts["last_balance"] > 0, "last_balance"].sum()
 total_debt = -accounts.loc[accounts["last_balance"] < 0, "last_balance"].sum()
-
 past_worth, past_date = net_worth_as_of(load_balance_history(), today - pd.Timedelta(days=30))
 hero_note = (
     ui.delta_html(net_worth, past_worth, up_is_good=True, versus=past_date.strftime("%b %-d"))
     if past_worth is not None
     else "Trend appears once a month of daily syncs has built up"
 )
-
-cash_snapshot = cash_on_hand_for_month(selected_month, snapshot_day=15)
-if cash_snapshot is not None:
-    cash_text = f"<b>{ui.money(cash_snapshot[0])}</b> cash on hand, {cash_snapshot[1].strftime('%b %-d')}"
-else:
-    cash_text = f"No cash snapshot for {html.escape(month_name)}"
-
+cash_snapshot = cash_on_hand_for_month(end.to_period("M"), snapshot_day=15)
+cash_text = (
+    f"<b>{ui.money(cash_snapshot[0])}</b> cash on hand, {cash_snapshot[1].strftime('%b %-d')}"
+    if cash_snapshot is not None
+    else "No cash snapshot yet"
+)
 with st.container(border=True, key="card_hero"):
-    hero_left, hero_right = st.columns([2, 3], vertical_alignment="center")
-    hero_left.markdown(
-        f'<div class="hero-label">Net worth</div><div class="hero-value">{ui.money(net_worth)}</div>'
-        f'<div class="hero-sub">{hero_note}</div>',
-        unsafe_allow_html=True,
-    )
-    total = max(assets + total_debt, 1)
-    hero_right.markdown(
-        f'<div class="meter">'
-        f'<span style="width:{assets / total * 100:.1f}%;background:{ui.SERIES["blue"]}"></span>'
-        f'<span style="width:{total_debt / total * 100:.1f}%;background:{ui.SERIES["orange"]}"></span></div>'
-        f'<div class="legend">'
-        f'<span><span class="swatch" style="background:{ui.SERIES["blue"]}"></span>Assets <b>{ui.money(assets)}</b></span>'
-        f'<span><span class="swatch" style="background:{ui.SERIES["orange"]}"></span>Debt <b>{ui.money(total_debt)}</b></span>'
-        f"<span>{cash_text}</span></div>",
+    st.markdown(
+        f'<div class="hero-label">Net worth today</div><div class="hero-value">{ui.money(net_worth)}</div>'
+        f'<div class="hero-sub">{hero_note} &nbsp;·&nbsp; Assets <b>{ui.money(assets)}</b> &nbsp;·&nbsp; '
+        f"Debt <b>{ui.money(total_debt)}</b> &nbsp;·&nbsp; {cash_text}</div>",
         unsafe_allow_html=True,
     )
 
-# ---------- This month, against the same stretch of last month ----------
-prev_month = selected_month - 1
-prev_txns = transactions[transactions["month"] == prev_month]
-is_current_month = selected_month == today.to_period("M")
-if is_current_month:
-    # A partial month against a full one always looks like a win; compare like with like.
-    prev_txns = prev_txns[prev_txns["effective"].dt.day <= today.day]
-    versus = f"{prev_month.strftime('%b')} 1–{today.day}"
-else:
-    versus = prev_month.strftime("%B")
-has_prev = not prev_txns.empty
+# ---------- Trend strip: the sliced range, its comparison, and six months of direction ----------
+income, bills, spending = month_totals(sliced)
+p_income, p_bills, p_spending = month_totals(previous)
+left_over, p_left_over = income - bills - spending, p_income - p_bills - p_spending
+paid_to_cards = -sliced.loc[is_card_payment(sliced), "amount"].sum()
+trend = monthly_totals(history, end.to_period("M"), months=6)
 
-income, bills, spending = month_totals(month_txns)
-p_income, p_bills, p_spending = month_totals(prev_txns) if has_prev else (None, None, None)
-# The first three tiles add up to the fourth, so the row can be checked at a glance.
-left_over = income - bills - spending
-p_left_over = p_income - p_bills - p_spending if has_prev else None
-paid_to_cards = -month_txns.loc[is_card_payment(month_txns), "amount"].sum()
-p_paid_to_cards = -prev_txns.loc[is_card_payment(prev_txns), "amount"].sum() if has_prev else None
 
-ui.section_label(month_name)
-ui.tile_row(
-    [
-        ui.stat_tile("Income", ui.money(income), ui.delta_html(income, p_income, True, versus)),
-        ui.stat_tile("Bills", ui.money(bills), ui.delta_html(bills, p_bills, False, versus)),
-        ui.stat_tile("Card spending", ui.money(spending), ui.delta_html(spending, p_spending, False, versus)),
-        ui.stat_tile(
-            "Left for debt and savings", ui.money(left_over), ui.delta_html(left_over, p_left_over, True, versus)
-        ),
-        ui.stat_tile(
-            "Paid to cards", ui.money(paid_to_cards), ui.delta_html(paid_to_cards, p_paid_to_cards, None, versus)
-        ),
-    ]
-)
+def metric(col, label, value, prev, up_is_good):
+    change = value - prev
+    delta = f"{'+' if change >= 0 else '-'}{ui.money(abs(change))} vs {prev_short}" if previous.shape[0] else None
+    col.metric(
+        label,
+        ui.money(value),
+        delta=delta,
+        delta_color=("normal" if up_is_good else "inverse") if delta else "off",
+        border=False,
+    )
+
+
+ui.section_label(f"{range_text}  ·  compared with {prev_short}")
+m1, m2, m3, m4 = st.columns(4)
+metric(m1, "Income", income, p_income, True)
+metric(m2, "Bills", bills, p_bills, False)
+metric(m3, "Card spending", spending, p_spending, False)
+metric(m4, "Left for debt and savings", left_over, p_left_over, True)
 st.caption(
-    "Income minus bills minus card spending is what is left. Card payments are shown apart "
-    "because they pay for spending that is already counted."
+    f"Left for debt and savings is income minus bills minus card spending. Paid to cards in this range: "
+    f"{ui.money(paid_to_cards)}, kept apart so card spending is not counted twice.".replace("$", "\\$")
 )
 
-# ---------- Cross-filter: one control, every visual below follows it ----------
-st.write("")
-choice = st.segmented_control("Show", FILTERS, default="All", key="overview_filter") or "All"
 
-filtered_txns = month_txns
-filtered_accounts = accounts
-if choice == "Income":
-    filtered_txns = month_txns[income_mask(month_txns)]
-elif choice == "Bills":
-    filtered_txns = month_txns[is_bill(month_txns)]
-elif choice == "Spending":
-    filtered_txns = month_txns[is_spending(month_txns)]
-elif choice == "Card payments":
-    filtered_txns = month_txns[is_card_payment(month_txns)]
-elif choice == "Cash":
-    filtered_txns = month_txns[month_txns["account_type"].isin(CASH_TYPES)]
-    filtered_accounts = accounts[accounts["account_type"].isin(CASH_TYPES)]
-elif choice == "Debt":
-    filtered_txns = month_txns[month_txns["account_type"] == "credit_card"]
-    filtered_accounts = accounts[accounts["account_type"] == "credit_card"]
-if choice in ("Income", "Bills", "Spending", "Card payments"):
-    filtered_accounts = accounts[accounts["id"].isin(filtered_txns["account_id"].unique())]
-
-chart_col, accounts_col = st.columns([3, 2])
+# ---------- Charts that select ----------
+CARD_HEIGHT = 400  # every card in a row is the same height, whatever it holds
+CHART_HEIGHT = 290
 
 
 def ranked_bars(ranked, label_title, key):
-    """Horizontal bars, largest first. `ranked` has `label`, `amount`, `count`, `is_rest`.
+    """Horizontal bars, largest first. Click selects (several allowed), click again deselects,
+    empty space clears. Returns the selected labels.
 
-    Click a bar to narrow everything below it; click it again, or empty space, to clear.
-    Returns the clicked label, or None.
-
-    Streamlit only reports clicks from single-layer charts, so this is one bar mark with no
-    text layer: the amount rides in the row label instead of at the bar's tip.
+    Streamlit only reports clicks from single-layer charts, so the amount rides in the row
+    label, and the click target is widened by drawing a second, near-invisible bar per row
+    that spans the full width: clicking anywhere along a row selects it, not just its bar.
     """
-    pick, hover = ui.click_and_hover("label")
+    pick, hover = ui.click_and_hover("label", multi=True)
     ranked = ranked.assign(
         row=[f"{label}   {ui.money(amount)}" for label, amount in zip(ranked["label"], ranked["amount"], strict=True)]
     )
+    reach = float(ranked["amount"].max()) * 1.04
+    data = pd.concat([ranked.assign(kind="row", amount=reach), ranked.assign(kind="value")], ignore_index=True)
+    is_row = alt.datum.kind == "row"
     chart = (
-        alt.Chart(ranked)
-        .mark_bar(
-            size=18,
-            cornerRadiusEnd=4,
-            cursor="pointer",
-            # An invisible outline widens the click target: a $60 bar is only a few pixels long.
-            stroke="transparent",
-            strokeWidth=16,  # bar 18 + outline 16 = the full 34px row
-        )
+        alt.Chart(data)
+        .mark_bar(size=18, cornerRadiusEnd=4, cursor="pointer", stroke="transparent", strokeWidth=16)
         .encode(
             y=alt.Y(
                 "row:N",
@@ -190,96 +238,158 @@ def ranked_bars(ranked, label_title, key):
                     labelPadding=12,
                 ),
             ),
-            x=alt.X("amount:Q", axis=None),
-            # The "N others" remainder is context, not a merchant, so it does not get the accent.
-            color=alt.condition(alt.datum.is_rest, alt.value(ui.DEEMPHASIS), alt.value(ui.ACCENT)),
-            opacity=alt.when(hover).then(alt.value(1)).when(pick).then(alt.value(0.85)).otherwise(alt.value(0.3)),
+            x=alt.X("amount:Q", axis=None, stack=None, scale=alt.Scale(domain=[0, reach], nice=False)),
+            color=alt.when(is_row)
+            .then(alt.value(ui.INK))
+            .when(alt.datum.is_rest)
+            .then(alt.value(ui.DEEMPHASIS))
+            .otherwise(alt.value(ui.ACCENT)),
+            opacity=alt.when(hover, is_row)
+            .then(alt.value(0.08))
+            .when(is_row)
+            .then(alt.value(0.03))
+            .when(hover)
+            .then(alt.value(1))
+            .when(pick)
+            .then(alt.value(0.85))
+            .otherwise(alt.value(0.3)),
+            order=alt.Order("kind:N", sort="ascending"),  # "row" backgrounds drawn before "value" bars
             tooltip=[
                 alt.Tooltip("label:N", title=label_title),
-                alt.Tooltip("amount:Q", title="Amount", format="$,.2f"),
                 alt.Tooltip("count:Q", title="Transactions"),
             ],
         )
         .add_params(pick, hover)
     )
-    event = ui.show_chart(chart, height=34 * len(ranked) + 8, key=key, selection="pick")
-    return ui.picked(event, "pick", "label")
+    event = ui.show_chart(chart, height=CHART_HEIGHT, key=f"{key}_{state['reset_token']}", selection="pick")
+    chosen = [c for c in ui.picked_all(event, "pick", "label") if c in set(ranked["label"])]
+    return chosen
 
 
-if choice == "Income":
-    flow_subset = filtered_txns
-else:
-    # Money going out. Transfers net to zero, and card payments settle spending that is
-    # already counted, so neither is an outflow unless card payments are what you asked for.
-    flow_subset = filtered_txns[(filtered_txns["amount"] < 0) & ~is_transfer(filtered_txns)]
-    if choice != "Card payments":
-        flow_subset = flow_subset[~is_card_payment(flow_subset)]
+def ranked_card(container, title, subtitle, txns, column, label_title, key, keep=8):
+    with container, st.container(border=True, key=f"card_{key}", height=CARD_HEIGHT):
+        st.subheader(title)
+        if txns.empty:
+            st.caption(subtitle + " Nothing in this view.")
+            return []
+        ranked = rank_by(txns, column, keep=keep)
+        st.caption(f"{subtitle} {ui.money(ranked['amount'].sum())} across {len(ranked)}.".replace("$", "\\$"))
+        return ranked_bars(ranked, label_title, key)
 
-# Clicking a bar narrows what is below it: category -> merchants -> transactions.
-# Chart keys include the month and view, so changing either starts from a clean selection.
-picked_category = picked_merchant = None
-other_merchants = []
 
-with chart_col, st.container(border=True, key="card_categories"):
-    st.subheader(
-        {
-            "Income": "Income by source",
-            "Bills": "Bills by type",
-            "Spending": "Spending by category",
-            "Card payments": "Card payments",
-        }.get(choice, "Where the money went")
+# Outflows exclude transfers (they net to zero) and, unless the category slicer asks for them,
+# card payments (they settle spending that is already counted).
+outflows = sliced[(sliced["amount"] < 0) & ~is_transfer(sliced)]
+if not picked_categories:
+    outflows = outflows[~is_card_payment(outflows)]
+inflows = sliced[income_mask(sliced)]
+
+out_col, merchant_col2, in_col = st.columns(3)
+picked_out = ranked_card(out_col, "Money out", "By category.", outflows, "label", "Category", "out")
+narrowed = outflows[outflows["label"].isin(picked_out)] if picked_out else outflows
+everyday = narrowed if (picked_out or picked_categories) else narrowed[~is_bill(narrowed)]
+picked_merchants = ranked_card(
+    merchant_col2,
+    "Top merchants",
+    ("Within the selection." if (picked_out or picked_categories) else "Everyday spending, bills left out."),
+    everyday,
+    "merchant",
+    "Merchant",
+    "merchant",
+    keep=8,
+)
+picked_in = ranked_card(in_col, "Money in", "By source.", inflows, "merchant", "Source", "in")
+
+selections = [*picked_out, *picked_merchants, *picked_in]
+if selections:
+    note_col, clear_col = st.columns([5, 1], vertical_alignment="center")
+    note_col.markdown(
+        f'<div class="selection-note">Selected: <b>{html.escape(", ".join(selections))}</b>. '
+        "Click again to deselect.</div>",
+        unsafe_allow_html=True,
     )
-    flow_subset = flow_subset.assign(label=flow_subset["category"].map(category_label))
-    by_cat = rank_by(flow_subset, "label")
-    if by_cat.empty:
-        st.caption("Nothing to show for this view.")
-    else:
-        noun = "category" if len(by_cat) == 1 else "categories"
-        st.caption(
-            f"{ui.money(by_cat['amount'].sum())} across {len(by_cat)} {noun}, {month_name}. "
-            "Click a bar to narrow the page to it.".replace("$", "\\$")
-        )
-        picked_category = ranked_bars(by_cat, "Category", key=f"cat_{selected_month}_{choice}")
-        if picked_category not in set(by_cat["label"]):
-            picked_category = None
+    clear_col.button("Clear selections", on_click=clear_selections, width="stretch")
 
-with chart_col, st.container(border=True, key="card_merchants"):
-    st.subheader("Who paid you" if choice == "Income" else "Where you spent it")
-    if picked_category:
-        merchant_subset, scope = flow_subset[flow_subset["label"] == picked_category], f"{picked_category} only. "
-    elif choice == "All":
-        # Rent alone would flatten every other bar, and the chart above already covers bills.
-        merchant_subset, scope = flow_subset[~is_bill(flow_subset)], "Everyday spending, bills left out. "
-    else:
-        merchant_subset, scope = flow_subset, ""
-    if merchant_subset.empty:
-        st.caption("Nothing to show for this view.")
-    else:
-        by_merchant = rank_by(merchant_subset, "merchant", keep=8)
-        st.caption(f"{scope}Names are cleaned up from bank descriptions, so grouping is approximate.")
-        picked_merchant = ranked_bars(
-            by_merchant, "Merchant", key=f"merchant_{selected_month}_{choice}_{picked_category}"
-        )
-        if picked_merchant not in set(by_merchant["label"]):
-            picked_merchant = None
-        listed = set(by_merchant.loc[~by_merchant["is_rest"], "label"])
-        other_merchants = sorted(set(merchant_subset["merchant"]) - listed)
+# ---------- By month, and the accounts ----------
+ui.section_label("By month")
+flow_col, accounts_col = st.columns(2)
 
-with accounts_col, st.container(border=True, key="card_accounts"):
+
+def jump_to_month(chart_key):
+    """Chart click handler: set the date range to the month that was clicked."""
+    clicked = ui.picked(state.get(chart_key), "pick", "month_key")
+    if clicked:
+        period = pd.Period(clicked, freq="M")
+        month_end = min(period.to_timestamp(how="end").normalize(), today)
+        set_range(period.to_timestamp(), month_end)
+
+
+with flow_col, st.container(border=True, key="card_flow", height=CARD_HEIGHT):
+    st.subheader("Monthly cash flow")
+    st.caption("Click a month to jump to it.")
+    flow = trend.melt(
+        id_vars=["month"], value_vars=["income", "bills", "spending"], var_name="kind", value_name="amount"
+    )
+    flow["kind"] = flow["kind"].str.capitalize()
+    flow["label"] = flow["month"].dt.strftime("%b")
+    flow["month_key"] = flow["month"].astype(str)
+    flow["in_range"] = flow["month"].apply(lambda m: start.to_period("M") <= m <= end.to_period("M"))
+    kinds = ["Income", "Bills", "Spending"]
+    pick, hover = ui.click_and_hover("month_key")
+    flow_chart = (
+        alt.Chart(flow)
+        .mark_bar(cornerRadiusEnd=3, cursor="pointer")
+        .encode(
+            x=alt.X(
+                "label:N",
+                sort=list(flow["label"].unique()),
+                title=None,
+                axis=alt.Axis(labelAngle=0, ticks=False),
+                scale=alt.Scale(paddingInner=0.25),
+            ),
+            xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
+            y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
+            color=alt.Color(
+                "kind:N",
+                sort=kinds,
+                scale=alt.Scale(domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]]),
+            ),
+            opacity=alt.when(hover)
+            .then(alt.value(1))
+            .when(alt.datum.in_range)
+            .then(alt.value(1))
+            .otherwise(alt.value(0.4)),
+            tooltip=[
+                alt.Tooltip("label:N", title="Month"),
+                alt.Tooltip("kind:N", title="Type"),
+                alt.Tooltip("amount:Q", title="Amount", format="$,.0f"),
+            ],
+        )
+        .add_params(pick, hover)
+    )
+    flow_key = f"flow_chart_{start.date()}_{end.date()}_{state['reset_token']}"
+    ui.show_chart(
+        flow_chart, height=CHART_HEIGHT, key=flow_key, selection="pick", on_select=lambda: jump_to_month(flow_key)
+    )
+
+with accounts_col, st.container(border=True, key="card_accounts", height=CARD_HEIGHT):
     st.subheader("Accounts")
-    st.caption(f"{ui.money(filtered_accounts['last_balance'].sum())} across {len(filtered_accounts)} accounts")
+    st.caption(
+        f"{ui.money(sliced_accounts['last_balance'].sum())} across {len(sliced_accounts)} accounts, today".replace(
+            "$", "\\$"
+        )
+    )
     groups = [
-        ("Cash", filtered_accounts[filtered_accounts["account_type"].isin(CASH_TYPES)]),
-        ("Credit cards", filtered_accounts[filtered_accounts["account_type"] == "credit_card"]),
-        ("Other", filtered_accounts[~filtered_accounts["account_type"].isin(CASH_TYPES + ["credit_card"])]),
+        ("Cash", sliced_accounts[sliced_accounts["account_type"].isin(CASH_TYPES)]),
+        ("Credit cards", sliced_accounts[sliced_accounts["account_type"] == "credit_card"]),
+        ("Other", sliced_accounts[~sliced_accounts["account_type"].isin(CASH_TYPES + ["credit_card"])]),
     ]
     rows = []
     for group_name, group in groups:
         if group.empty:
             continue
         rows.append(
-            f'<div class="acct-group"><span>{group_name}</span>'
-            f"<span>{ui.money(group['last_balance'].sum())}</span></div>"
+            f'<div class="acct-group"><span>{group_name}</span><span>{ui.money(group["last_balance"].sum())}</span></div>'
         )
         for _, acct in group.sort_values("last_balance", ascending=False).iterrows():
             badge = ""
@@ -294,215 +404,39 @@ with accounts_col, st.container(border=True, key="card_accounts"):
             )
     st.markdown("".join(rows), unsafe_allow_html=True)
 
-# ---------- Trends (always card spending and whole months; not narrowed by the filter) ----------
-ui.section_label("Trends")
-pace_col, flow_col, daily_col = st.columns(3)
-
-spend_all = transactions[is_spending(transactions)]
-
-
-def jump_to_month(chart_key):
-    """Chart click handler: switch the whole dashboard to the month that was clicked.
-    Runs before the rerun, which is the only moment the month selector's value may be set."""
-    clicked = ui.picked(st.session_state.get(chart_key), "pick", "month_key")
-    if clicked:
-        st.session_state["month_select"] = pd.Period(clicked, freq="M")
-
-
-with pace_col, st.container(border=True, key="card_pace"):
-    st.subheader("Spending pace")
-    st.caption("Card spending added up day by day. Hover to compare.")
-
-    def cumulative(period, through_day):
-        daily = (-spend_all[spend_all["month"] == period].set_index("posted")["amount"]).groupby(lambda d: d.day).sum()
-        return daily.reindex(range(1, through_day + 1), fill_value=0).cumsum()
-
-    this_name, prev_name = selected_month.strftime("%B"), prev_month.strftime("%B")
-    series = [
-        pd.DataFrame({"day": s.index, "spent": s.values, "month": name})
-        for s, name in [
-            (cumulative(selected_month, days_counted(selected_month, today)), this_name),
-            (cumulative(prev_month, prev_month.days_in_month), prev_name),
-        ]
-        if s.iloc[-1] > 0
-    ]
-    if not series:
-        st.caption("No card spending in these months.")
-    else:
-        pace = pd.concat(series)
-        names = list(pace["month"].unique())
-        colour = alt.Color(
-            "month:N",
-            sort=[this_name, prev_name],
-            scale=alt.Scale(domain=[this_name, prev_name], range=[ui.ACCENT, ui.DEEMPHASIS]),
-        )
-        x = alt.X(
-            "day:Q",
-            title="Day of month",
-            scale=alt.Scale(domain=[1, 31], nice=False),
-            axis=alt.Axis(grid=False, values=[1, 5, 10, 15, 20, 25, 31]),
-        )
-        y = alt.Y("spent:Q", title=None, axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False))
-        lines = (
-            alt.Chart(pace)
-            .mark_line(strokeWidth=2, strokeJoin="round", strokeCap="round")
-            .encode(x=x, y=y, color=colour)
-        )
-        ends = pace.groupby("month").tail(1)
-        dots = (
-            alt.Chart(ends)
-            .mark_point(size=70, filled=True, opacity=1, stroke=ui.SURFACE, strokeWidth=2)
-            .encode(x="day:Q", y="spent:Q", color=colour)
-        )
-
-        # Crosshair: aim at a day, not at a 2px line. One readout lists every month at that day.
-        readout = pace.pivot(index="day", columns="month", values="spent").reset_index()
-        for name in names:
-            readout[name] = readout[name].map(lambda v: "not yet" if pd.isna(v) else f"${v:,.0f}")
-        nearest = alt.selection_point(
-            name="crosshair", nearest=True, on="mouseover", clear="mouseout", fields=["day"], empty=False
-        )
-        crosshair = (
-            alt.Chart(readout)
-            .mark_rule(color=ui.INK_MUTED, strokeWidth=1)
-            .encode(
-                x="day:Q",
-                opacity=alt.condition(nearest, alt.value(0.8), alt.value(0)),
-                tooltip=[alt.Tooltip("day:Q", title="Day of month")] + [alt.Tooltip(f"{n}:N", title=n) for n in names],
-            )
-            .add_params(nearest)
-        )
-        markers = (
-            alt.Chart(pace)
-            .mark_point(size=60, filled=True, stroke=ui.SURFACE, strokeWidth=2)
-            .encode(x="day:Q", y="spent:Q", color=colour, opacity=alt.condition(nearest, alt.value(1), alt.value(0)))
-        )
-        ui.show_chart(alt.layer(lines, dots, crosshair, markers), height=230)
-
-recent = sorted(available_months)[-6:]
-
-with flow_col, st.container(border=True, key="card_flow"):
-    st.subheader("Monthly cash flow")
-    st.caption(f"{month_name} highlighted. Click a month to switch to it.")
-    flow_rows = []
-    for m in recent:
-        m_income, m_bills, m_spending = month_totals(transactions[transactions["month"] == m])
-        for kind, amount in (("Income", m_income), ("Bills", m_bills), ("Spending", m_spending)):
-            flow_rows.append(
-                {
-                    "month": m.strftime("%b"),
-                    "month_key": str(m),
-                    "kind": kind,
-                    "amount": amount,
-                    "selected": m == selected_month,
-                }
-            )
-    flow = pd.DataFrame(flow_rows)
-    kinds = ["Income", "Bills", "Spending"]
-    pick, hover = ui.click_and_hover("month_key")
-    flow_chart = (
-        alt.Chart(flow)
-        .mark_bar(cornerRadiusEnd=3, cursor="pointer")
-        .encode(
-            x=alt.X(
-                "month:N",
-                sort=[m.strftime("%b") for m in recent],
-                title=None,
-                axis=alt.Axis(labelAngle=0, ticks=False),
-                scale=alt.Scale(paddingInner=0.25),
-            ),
-            xOffset=alt.XOffset("kind:N", sort=kinds, scale=alt.Scale(paddingInner=0.15)),
-            y=alt.Y("amount:Q", title=None, axis=alt.Axis(format="$~s", tickCount=4, domain=False, ticks=False)),
-            color=alt.Color(
-                "kind:N",
-                sort=kinds,
-                scale=alt.Scale(domain=kinds, range=[ui.SERIES["aqua"], ui.SERIES["orange"], ui.SERIES["blue"]]),
-            ),
-            # The month under the pointer lifts to full strength, so the chart visibly responds.
-            opacity=alt.when(hover)
-            .then(alt.value(1))
-            .when(alt.datum.selected)
-            .then(alt.value(1))
-            .otherwise(alt.value(0.4)),
-            tooltip=[
-                alt.Tooltip("month:N", title="Month"),
-                alt.Tooltip("kind:N", title="Type"),
-                alt.Tooltip("amount:Q", title="Amount", format="$,.0f"),
-            ],
-        )
-        .add_params(pick, hover)
-    )
-    # The key carries the month, so each month change hands the chart a clean slate. Otherwise
-    # it would remember its last click and ignore the next click on that same month.
-    flow_key = f"flow_chart_{selected_month}"
-    ui.show_chart(flow_chart, height=230, key=flow_key, selection="pick", on_select=lambda: jump_to_month(flow_key))
-
-with daily_col, st.container(border=True, key="card_daily"):
-    st.subheader("Spending per day")
-    st.caption("Monthly average, card spending. Click a month to switch to it.")
-    monthly_spend = -spend_all.groupby("month")["amount"].sum()
-    daily = pd.DataFrame(
-        {
-            "month": [m.strftime("%b") for m in monthly_spend.index],
-            "month_key": [str(m) for m in monthly_spend.index],
-            "per_day": [monthly_spend[m] / days_counted(m, today) for m in monthly_spend.index],
-            "selected": [m == selected_month for m in monthly_spend.index],
-        }
-    ).tail(6)
-    pick, hover = ui.click_and_hover("month_key")
-    this_per_day = daily.loc[daily["selected"], "per_day"]
-    if not this_per_day.empty:
-        st.caption(
-            f"{selected_month.strftime('%B')}: {ui.money(this_per_day.iloc[0], cents=True)} a day".replace("$", "\\$")
-        )
-    daily_chart = (
-        alt.Chart(daily)
-        .mark_bar(size=22, cornerRadiusEnd=4, cursor="pointer")
-        .encode(
-            x=alt.X("month:N", sort=list(daily["month"]), title=None, axis=alt.Axis(labelAngle=0, ticks=False)),
-            y=alt.Y("per_day:Q", title=None, axis=alt.Axis(format="$,.0f", tickCount=4, domain=False, ticks=False)),
-            color=alt.condition(alt.datum.selected, alt.value(ui.ACCENT), alt.value(ui.DEEMPHASIS)),
-            opacity=alt.when(hover)
-            .then(alt.value(1))
-            .when(alt.datum.selected)
-            .then(alt.value(1))
-            .otherwise(alt.value(0.75)),
-            tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("per_day:Q", title="Per day", format="$,.2f")],
-        )
-        .add_params(pick, hover)
-    )
-    daily_key = f"daily_chart_{selected_month}"
-    ui.show_chart(daily_chart, height=205, key=daily_key, selection="pick", on_select=lambda: jump_to_month(daily_key))
-
 # ---------- Transactions ----------
 ui.section_label("Transactions")
 with st.container(border=True, key="card_transactions"):
-    view_name = "All activity" if choice == "All" else choice
-    table = filtered_txns.assign(category=filtered_txns["category"].map(category_label))
-    narrowed_to = []
-    if picked_category:
-        table = table[table["category"] == picked_category]
-        narrowed_to.append(picked_category)
-    if picked_merchant:
-        wanted = other_merchants if picked_merchant not in set(table["merchant"]) else [picked_merchant]
-        table = table[table["merchant"].isin(wanted)]
-        narrowed_to.append(picked_merchant)
+    table = sliced
+    if picked_out or picked_in:
+        wanted_labels = set(picked_out)
+        table = (
+            table[table["label"].isin(wanted_labels) | (table["merchant"].isin(picked_in) & income_mask(table))]
+            if picked_in
+            else table[table["label"].isin(wanted_labels)]
+        )
+    if picked_merchants:
+        chosen = set(picked_merchants)
+        if any(m.endswith(" others") for m in chosen):
+            listed = set(rank_by(everyday, "merchant", keep=8).loc[lambda d: ~d["is_rest"], "label"])
+            chosen = (chosen - {m for m in chosen if m.endswith(" others")}) | (set(everyday["merchant"]) - listed)
+        table = table[table["merchant"].isin(chosen)]
     table = table.sort_values("posted", ascending=False)
-
-    st.subheader(f"{view_name}, {month_name}")
+    st.subheader(f"Transactions, {range_text}")
     summary = f"{len(table)} transactions, net {ui.money(table['amount'].sum(), cents=True)}"
-    if narrowed_to:
-        summary += f". Narrowed to {' and '.join(narrowed_to)}. Click the bar again to clear."
+    if selections:
+        summary += f". Narrowed to {', '.join(selections)}."
     st.caption(summary.replace("$", "\\$"))
     st.dataframe(
-        table[["posted", "description", "category", "account_name", "amount"]],
+        table[["posted", "merchant", "description", "label", "account_name", "amount"]],
         hide_index=True,
         width="stretch",
         height=420,
         column_config={
             "posted": st.column_config.DateColumn("Date", format="MMM D", width="small"),
-            "description": st.column_config.TextColumn("Description", width="large"),
-            "category": st.column_config.TextColumn("Category", width="medium"),
+            "merchant": st.column_config.TextColumn("Merchant", width="medium"),
+            "description": st.column_config.TextColumn("Bank description", width="large"),
+            "label": st.column_config.TextColumn("Category", width="medium"),
             "account_name": st.column_config.TextColumn("Account", width="medium"),
             "amount": st.column_config.NumberColumn("Amount", format="dollar", width="small"),
         },
@@ -512,8 +446,7 @@ last_sync = accounts["updated_at"].max()
 age_hours = (pd.Timestamp.now() - last_sync).total_seconds() / 3600
 freshness = f"Data as of {last_sync.strftime('%a %b %-d, %-I:%M %p')}"
 if age_hours > 12:
-    # Four syncs a day are scheduled; a gap this long means the Mac was off or a run failed.
-    freshness += f" ({age_hours:.0f} hours ago; the sync runs every 6 hours, so check logs/sync.log)"
+    freshness += f" ({age_hours:.0f} hours ago; the sync runs every 6 hours, so check the sync logs)"
 st.caption(
     f"{freshness}. Balances and transactions come from the bank feed every 6 hours; the page re-reads them every 5 minutes."
 )

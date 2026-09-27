@@ -82,3 +82,57 @@ def test_rank_by_folds_the_tail():
     assert list(ranked["label"]) == ["a", "b", "4 others"]
     assert list(ranked["amount"]) == [3.0, 2.0, 4.0]
     assert list(ranked["is_rest"]) == [False, False, True]
+
+
+def test_date_range_presets():
+    today = pd.Timestamp("2026-09-26")
+    assert rules.date_range_for("This month", today) == (pd.Timestamp("2026-09-01"), today)
+    assert rules.date_range_for("Last month", today) == (pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-31"))
+    assert rules.date_range_for("Last 3 months", today) == (pd.Timestamp("2026-07-01"), today)
+    assert rules.date_range_for("Year to date", today) == (pd.Timestamp("2026-01-01"), today)
+    assert rules.date_range_for("Custom", today, ("2026-09-10", "2026-09-03")) == (
+        pd.Timestamp("2026-09-03"),
+        pd.Timestamp("2026-09-10"),
+    )
+    assert rules.date_range_for("Custom", today, None) == (pd.Timestamp("2026-09-01"), today)
+
+
+def test_previous_range_is_like_for_like_for_the_current_month():
+    today = pd.Timestamp("2026-09-26")
+    assert rules.previous_range(pd.Timestamp("2026-09-01"), today, today) == (
+        pd.Timestamp("2026-08-01"),
+        pd.Timestamp("2026-08-26"),
+    )
+    # a whole past month compares with the whole month before it
+    assert rules.previous_range(pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-31"), today) == (
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-07-31"),
+    )
+
+
+def test_monthly_totals_zero_fills():
+    df = frame(
+        [
+            ("2026-09-02", 2000.0, "income:paycheck", "checking"),
+            ("2026-07-05", -300.0, "spending:discretionary", "credit_card"),
+        ]
+    )
+    df["effective"] = df["posted"]
+    df["month"] = df["effective"].dt.to_period("M")
+    out = rules.monthly_totals(df, pd.Period("2026-09", "M"), months=3)
+    assert [str(m) for m in out["month"]] == ["2026-07", "2026-08", "2026-09"]
+    assert list(out["spending"]) == [300.0, 0.0, 0.0]
+    assert list(out["left_over"]) == [-300.0, 0.0, 2000.0]
+
+
+def test_describe_range():
+    assert rules.describe_range(pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-26")) == "Sep 1–26, 2026"
+    assert rules.describe_range(pd.Timestamp("2026-07-01"), pd.Timestamp("2026-09-26")) == "Jul 1 – Sep 26, 2026"
+
+
+def test_year_to_date_compares_with_last_year():
+    today = pd.Timestamp("2026-09-26")
+    assert rules.previous_range(pd.Timestamp("2026-01-01"), today, today) == (
+        pd.Timestamp("2025-01-01"),
+        pd.Timestamp("2025-09-26"),
+    )

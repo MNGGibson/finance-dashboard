@@ -59,12 +59,12 @@ h3 {{ font-size: 1rem !important; font-weight: 600 !important; padding: 0 !impor
 
 .section-label {{
     font-size: 0.78rem; font-weight: 600; color: {INK_MUTED};
-    text-transform: uppercase; letter-spacing: 0.06em; margin: 1.4rem 0 0.6rem 0;
+    text-transform: uppercase; letter-spacing: 0.06em; margin: 0.6rem 0 0 0;
 }}
 
 /* Hero */
 .hero-label {{ font-size: 0.9rem; color: {INK_SECONDARY}; margin: 0; }}
-.hero-value {{ font-size: 3.2rem; font-weight: 650; letter-spacing: -0.03em; line-height: 1.1; margin: 2px 0 6px 0; color: {INK}; }}
+.hero-value {{ font-size: 2.6rem; font-weight: 650; letter-spacing: -0.03em; line-height: 1.1; margin: 2px 0 6px 0; color: {INK}; }}
 .hero-sub {{ font-size: 0.88rem; color: {INK_MUTED}; margin: 0; }}
 
 /* Stat tiles */
@@ -90,15 +90,27 @@ h3 {{ font-size: 1rem !important; font-weight: 600 !important; padding: 0 !impor
 
 /* Account list */
 .acct-group {{ font-size: 0.78rem; color: {INK_MUTED}; text-transform: uppercase; letter-spacing: 0.06em;
-    display: flex; justify-content: space-between; margin: 14px 0 4px 0; }}
+    display: flex; justify-content: space-between; margin: 8px 0 2px 0; }}
 .acct-group:first-child {{ margin-top: 4px; }}
 .acct {{ display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
-    padding: 9px 0; border-top: 1px solid {GRID}; }}
+    padding: 5px 0; border-top: 1px solid {GRID}; }}
 .acct-name {{ font-size: 0.92rem; color: {INK}; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-.acct-org {{ font-size: 0.78rem; color: {INK_MUTED}; }}
+.acct-org {{ font-size: 0.74rem; color: {INK_MUTED}; line-height: 1.1; }}
 .acct-bal {{ font-size: 0.95rem; font-weight: 600; color: {INK}; font-variant-numeric: tabular-nums; white-space: nowrap; }}
 .badge {{ font-size: 0.72rem; color: {WARNING}; border: 1px solid rgba(250,178,25,0.35);
     border-radius: 999px; padding: 1px 8px; margin-left: 8px; white-space: nowrap; }}
+
+/* Native metrics (trend strip) styled like the cards */
+[data-testid="stMetric"] {{ background: {SURFACE}; border: 1px solid {BORDER} !important; border-radius: 14px; padding: 12px 16px 6px 16px; }}
+[data-testid="stMetricLabel"] p {{ font-size: 0.85rem !important; color: {INK_SECONDARY}; }}
+[data-testid="stMetricValue"] {{ font-size: 1.6rem !important; font-weight: 650; letter-spacing: -0.02em; }}
+[data-testid="stMetricDelta"] {{ font-size: 0.78rem !important; }}
+.hero-sub b {{ color: {INK}; font-weight: 600; }}
+
+/* Slicer row */
+.slicer-label {{ font-size: 0.78rem; font-weight: 600; color: {INK_MUTED}; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 4px 0; }}
+.selection-note {{ font-size: 0.85rem; color: {INK_SECONDARY}; margin: 2px 0 0 0; }}
+.selection-note b {{ color: {INK}; }}
 
 /* Status line (icon + label, never colour alone) */
 .status {{ font-size: 0.92rem; color: {INK_SECONDARY}; margin: 6px 0 0 0; }}
@@ -198,9 +210,16 @@ def picked(event, selection, field):
     return points[0].get(field) if points else None
 
 
-def click_and_hover(field):
+def click_and_hover(field, multi=False):
     """The two selection parameters every clickable chart uses: `pick` (click to select,
-    click again or click empty space to clear) and `hover` (so the mark visibly responds)."""
-    pick = alt.selection_point(name="pick", fields=[field], on="click")
+    click again to deselect, click empty space to clear) and `hover` (so the mark visibly
+    responds). With `multi`, each plain click toggles one more value into the selection."""
+    pick = alt.selection_point(name="pick", fields=[field], on="click", toggle="true" if multi else "event.shiftKey")
     hover = alt.selection_point(name="hover", fields=[field], on="mouseover", clear="mouseout", empty=False)
     return pick, hover
+
+
+def picked_all(event, selection, field):
+    """Every selected value of `field`, in click order; empty when nothing is selected."""
+    points = (event or {}).get("selection", {}).get(selection) or []
+    return [p.get(field) for p in points if p.get(field) is not None]

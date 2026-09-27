@@ -104,3 +104,77 @@ def rank_by(txns, column, keep=None):
             ignore_index=True,
         )
     return ranked
+
+
+# ---------- Date ranges for the slicers ----------
+RANGE_PRESETS = ["This month", "Last month", "Last 3 months", "Year to date", "Custom"]
+
+
+def date_range_for(preset, today, custom=None):
+    """(start, end) as normalized Timestamps, inclusive, for a preset name."""
+    today = pd.Timestamp(today).normalize()
+    month_start = today.replace(day=1)
+    if preset == "Last month":
+        end = month_start - pd.Timedelta(days=1)
+        return end.replace(day=1), end
+    if preset == "Last 3 months":
+        return (month_start - pd.DateOffset(months=2)).normalize(), today
+    if preset == "Year to date":
+        return today.replace(month=1, day=1), today
+    if preset == "Custom" and custom and len(custom) == 2 and all(custom):
+        start, end = (pd.Timestamp(d).normalize() for d in custom)
+        return (start, end) if start <= end else (end, start)
+    return month_start, today
+
+
+def previous_range(start, end, today):
+    """The comparison window: the same stretch of the month before when the range is a
+    partial current month (so a half month is not compared with a whole one), otherwise
+    the period of equal length immediately before."""
+    today = pd.Timestamp(today).normalize()
+    if start == today.replace(month=1, day=1) and end == today:
+        # Year to date compares with the same stretch of the previous year.
+        return start - pd.DateOffset(years=1), end - pd.DateOffset(years=1)
+    if start == start.replace(day=1) and end == today and start.month == today.month and start.year == today.year:
+        prev_start = (start - pd.DateOffset(months=1)).normalize()
+        prev_end = prev_start + pd.Timedelta(days=min(end.day, prev_start.days_in_month) - 1)
+        return prev_start, prev_end
+    whole_months = start == start.replace(day=1) and end == end.to_period("M").to_timestamp(how="end").normalize()
+    if whole_months:
+        months = (end.year - start.year) * 12 + end.month - start.month + 1
+        prev_end = start - pd.Timedelta(days=1)
+        return (prev_end.replace(day=1) - pd.DateOffset(months=months - 1)).normalize(), prev_end
+    length = end - start
+    prev_end = start - pd.Timedelta(days=1)
+    return prev_end - length, prev_end
+
+
+def in_range(txns, start, end):
+    return (txns["effective"] >= start) & (txns["effective"] <= end + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+
+
+def monthly_totals(txns, last_month, months=6):
+    """income, bills, spending and left_over per month for the `months` months ending at
+    `last_month` (a Period), zero-filled, oldest first."""
+    periods = pd.period_range(end=last_month, periods=months, freq="M")
+    rows = []
+    for period in periods:
+        income, bills, spending = month_totals(txns[txns["month"] == period])
+        rows.append(
+            {
+                "month": period,
+                "income": income,
+                "bills": bills,
+                "spending": spending,
+                "left_over": income - bills - spending,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def describe_range(start, end):
+    if start.year == end.year:
+        if start.month == end.month:
+            return f"{start.strftime('%b %-d')}–{end.strftime('%-d, %Y')}"
+        return f"{start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
+    return f"{start.strftime('%b %-d, %Y')} – {end.strftime('%b %-d, %Y')}"
