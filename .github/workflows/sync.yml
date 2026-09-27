@@ -26,6 +26,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SIMPLEFIN_ACCESS_URL: ${{ secrets.SIMPLEFIN_ACCESS_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       - name: Check in with the watchdog
         if: always() && env.HEALTHCHECK_URL != ''
         env:

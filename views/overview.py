@@ -25,6 +25,7 @@ from rules import (
     income_mask,
     is_bill,
     is_card_payment,
+    is_spending,
     is_transfer,
     month_totals,
     monthly_totals,
@@ -193,10 +194,10 @@ ui.section_label(f"{range_text}  ·  compared with {prev_short}")
 m1, m2, m3, m4 = st.columns(4)
 metric(m1, "Income", income, p_income, True)
 metric(m2, "Bills", bills, p_bills, False)
-metric(m3, "Card spending", spending, p_spending, False)
+metric(m3, "Spending", spending, p_spending, False)
 metric(m4, "Left for debt and savings", left_over, p_left_over, True)
 st.caption(
-    f"Left for debt and savings is income minus bills minus card spending. Paid to cards in this range: "
+    f"Left for debt and savings is income minus bills minus spending. Paid to cards in this range: "
     f"{ui.money(paid_to_cards)}, kept apart so card spending is not counted twice.".replace("$", "\\$")
 )
 
@@ -219,11 +220,12 @@ def ranked_bars(ranked, label_title, key):
         row=[f"{label}   {ui.money(amount)}" for label, amount in zip(ranked["label"], ranked["amount"], strict=True)]
     )
     reach = float(ranked["amount"].max()) * 1.04
+    bar = max(8, min(18, CHART_HEIGHT // max(len(ranked), 1) - 8))  # thinner bars when there are many rows
     data = pd.concat([ranked.assign(kind="row", amount=reach), ranked.assign(kind="value")], ignore_index=True)
     is_row = alt.datum.kind == "row"
     chart = (
         alt.Chart(data)
-        .mark_bar(size=18, cornerRadiusEnd=4, cursor="pointer", stroke="transparent", strokeWidth=16)
+        .mark_bar(size=bar, cornerRadiusEnd=4, cursor="pointer", stroke="transparent", strokeWidth=16)
         .encode(
             y=alt.Y(
                 "row:N",
@@ -278,29 +280,21 @@ def ranked_card(container, title, subtitle, txns, column, label_title, key, keep
 
 
 # Outflows exclude transfers (they net to zero) and, unless the category slicer asks for them,
-# card payments (they settle spending that is already counted).
-outflows = sliced[(sliced["amount"] < 0) & ~is_transfer(sliced)]
+# card payments (they settle spending that is already counted). Refunds carry their group with a
+# positive sign, so spending groups are netted rather than filtered by sign.
+outflows = sliced[~is_transfer(sliced) & (is_bill(sliced) | is_spending(sliced) | (sliced["amount"] < 0))]
 if not picked_categories:
     outflows = outflows[~is_card_payment(outflows)]
+bills_out = outflows[is_bill(outflows) | is_card_payment(outflows)]
+spending_out = outflows[is_spending(outflows)]
 inflows = sliced[income_mask(sliced)]
 
-out_col, merchant_col2, in_col = st.columns(3)
-picked_out = ranked_card(out_col, "Money out", "By category.", outflows, "label", "Category", "out")
-narrowed = outflows[outflows["label"].isin(picked_out)] if picked_out else outflows
-everyday = narrowed if (picked_out or picked_categories) else narrowed[~is_bill(narrowed)]
-picked_merchants = ranked_card(
-    merchant_col2,
-    "Top merchants",
-    ("Within the selection." if (picked_out or picked_categories) else "Everyday spending, bills left out."),
-    everyday,
-    "merchant",
-    "Merchant",
-    "merchant",
-    keep=8,
-)
+bills_col, spend_col, in_col = st.columns(3)
+picked_bills = ranked_card(bills_col, "Bills", "By type.", bills_out, "label", "Bill", "bills", keep=14)
+picked_spend = ranked_card(spend_col, "Spending", "By category.", spending_out, "label", "Category", "spend", keep=14)
 picked_in = ranked_card(in_col, "Money in", "By source.", inflows, "merchant", "Source", "in")
-
-selections = [*picked_out, *picked_merchants, *picked_in]
+picked_out = [*picked_bills, *picked_spend]
+selections = [*picked_out, *picked_in]
 if selections:
     note_col, clear_col = st.columns([5, 1], vertical_alignment="center")
     note_col.markdown(
@@ -409,18 +403,9 @@ ui.section_label("Transactions")
 with st.container(border=True, key="card_transactions"):
     table = sliced
     if picked_out or picked_in:
-        wanted_labels = set(picked_out)
-        table = (
-            table[table["label"].isin(wanted_labels) | (table["merchant"].isin(picked_in) & income_mask(table))]
-            if picked_in
-            else table[table["label"].isin(wanted_labels)]
-        )
-    if picked_merchants:
-        chosen = set(picked_merchants)
-        if any(m.endswith(" others") for m in chosen):
-            listed = set(rank_by(everyday, "merchant", keep=8).loc[lambda d: ~d["is_rest"], "label"])
-            chosen = (chosen - {m for m in chosen if m.endswith(" others")}) | (set(everyday["merchant"]) - listed)
-        table = table[table["merchant"].isin(chosen)]
+        by_category = table["label"].isin(set(picked_out))
+        by_source = table["merchant"].isin(set(picked_in)) & income_mask(table)
+        table = table[by_category | by_source]
     table = table.sort_values("posted", ascending=False)
     st.subheader(f"Transactions, {range_text}")
     summary = f"{len(table)} transactions, net {ui.money(table['amount'].sum(), cents=True)}"

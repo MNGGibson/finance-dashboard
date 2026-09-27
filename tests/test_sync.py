@@ -6,6 +6,7 @@ from pathlib import Path
 os.environ.setdefault("SIMPLEFIN_ACCESS_URL", "https://user:pass@example.invalid/simplefin")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sync = importlib.import_module("sync")
+import classify  # noqa: E402
 
 
 def test_capped_window_is_only_a_notice(capsys):
@@ -28,3 +29,21 @@ def test_categorize_rules_then_card_fallback():
     )
     assert sync.categorize("Refund", rules, account_type="credit_card", amount=5.0) is None
     assert sync.categorize("STARBUCKS", rules, account_type=None, amount=-5.0) is None
+
+
+def test_categorize_routes_card_credits_and_bank_debits():
+    c = classify.Classifier({"amazon": "spending:shopping"}, [])
+    assert (
+        sync.categorize("AMAZON MARKETPLACE", [], "credit_card", 50.0, c, "Amazon") == "spending:shopping"
+    )  # refund nets
+    assert (
+        sync.categorize("AUTOPAY PAYMENT - THANK YOU", [], "credit_card", 20.0, c, None)
+        == classify.CARD_PAYMENT_RECEIVED
+    )
+    assert sync.categorize("Platinum Resy Credit", [], "credit_card", 100.0, c, None) == classify.CARD_CREDIT
+    assert (
+        sync.categorize("Zelle: Zelle Payment to Someone", [], "checking", -50.0, c, None) == "spending:zelle_payments"
+    )
+    assert sync.categorize("Interest earned", [], "checking", 1.5, c, None) == classify.INTEREST
+    assert sync.categorize("MYSTERY", [], "checking", -9.0, c, None) == classify.DEFAULT
+    assert sync.categorize("Zelle Payment from Someone", [], "checking", 25.0, c, None) == "income:other"

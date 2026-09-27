@@ -34,6 +34,7 @@ else
 fi
 # Category rules as SQL too, so the dashboard's logic is restorable on its own.
 .venv/bin/python scripts/rules.py export > "$BACKUP_DIR/category_rules.sql" 2>/dev/null
+.venv/bin/python scripts/classify.py --export > "$BACKUP_DIR/merchant_categories.sql" 2>/dev/null
 
 # Keep the newest BACKUP_KEEP dumps (bash globs sort by name, and names sort by date).
 dumps=("$BACKUP_DIR"/finance-*.sql.gz)

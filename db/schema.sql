@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS category_rules (
     priority  INT NOT NULL DEFAULT 0
 );
 
+-- One row per merchant: which spending group it belongs to and where that came from
+-- (manual, seed, keyword, model). scripts/sync.py consults it for card charges no rule matches.
+CREATE TABLE IF NOT EXISTS merchant_categories (
+    merchant    TEXT PRIMARY KEY,
+    category    TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'manual',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Records which db/migrations/*.sql have run (scripts/migrate.py). Fresh databases get
 -- the full schema above; migrations are for databases that already hold data.
 CREATE TABLE IF NOT EXISTS schema_migrations (

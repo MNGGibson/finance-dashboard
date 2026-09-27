@@ -24,7 +24,7 @@ def load_transactions(months=12):
     """Transactions with their account, dated in the local zone, plus a cleaned merchant
     name. Merchants are derived here, once per load, rather than on every rerun."""
     df = query(
-        "SELECT t.posted, t.amount, t.description, t.category, t.pending, "
+        "SELECT t.posted, t.amount, t.description, t.category, t.pending, nullif(t.raw->>'payee', '') AS payee, "
         "a.id AS account_id, a.name AS account_name, a.account_type "
         "FROM transactions t JOIN accounts a ON a.id = t.account_id "
         "WHERE t.posted >= now() - (%(months)s || ' months')::interval "
@@ -32,7 +32,13 @@ def load_transactions(months=12):
         {"months": months},
     )
     df["posted"] = to_local_naive(df["posted"])
-    return add_merchants(df, df["description"])
+    # The bank's own payee name where it gives one; otherwise the name recovered from the raw text.
+    df = add_merchants(df, df["description"])
+    # Card feeds give clean payee names ("McDonald's"); bank-account feeds echo the raw text
+    # ("Zelle Transfer to ..."), so those keep the name recovered from the description.
+    card_payee = df["payee"].where(df["account_type"] == "credit_card")
+    df["merchant"] = card_payee.fillna(df["merchant"]).str.replace(r"^(?i)aplpay\s+", "", regex=True)
+    return df
 
 
 @st.cache_data(ttl=300)

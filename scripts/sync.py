@@ -19,7 +19,12 @@ import psycopg2
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from db import get_conn  # noqa: E402
+from classify import (
+    CARD_CREDIT,  # noqa: E402
+    Classifier,  # noqa: E402
+)
+from classify import DEFAULT as UNCLASSIFIED  # noqa: E402
+from db import get_conn, setting  # noqa: E402
 
 ACCESS_URL = os.environ["SIMPLEFIN_ACCESS_URL"]
 
@@ -51,22 +56,87 @@ def load_account_types(conn):
         return dict(cur.fetchall())
 
 
-def categorize(description, rules, account_type=None, amount=None):
+def categorize(description, rules, account_type=None, amount=None, classifier=None, payee=None):
+    """Rules first. A card charge no rule matches is placed by merchant (classify.py); one the
+    merchant layers cannot place yet stays unclassified card spending."""
     if description:
         desc_lower = description.lower()
         for pattern, category in rules:
             if pattern in desc_lower:
                 return category
-    # Fallback: any otherwise-unmatched charge on a credit card is discretionary spending
-    if account_type == "credit_card" and amount is not None and float(amount) < 0:
-        return "spending:discretionary"
+    if amount is None or classifier is None:
+        if account_type == "credit_card" and amount is not None and float(amount) < 0:
+            return UNCLASSIFIED
+        return None
+    amount = float(amount)
+    if account_type == "credit_card":
+        # Charges are grouped by merchant. Money coming back is a payment you made, a
+        # statement credit, or a refund; a refund takes its merchant's group, so it nets out.
+        placed = classifier.category_for(payee, description)
+        if amount < 0:
+            return placed or UNCLASSIFIED
+        return placed or CARD_CREDIT
+    if account_type in ("checking", "savings") and amount < 0:
+        # Debit-card purchases and Zelle payments from the bank account, same layers.
+        return classifier.category_for(payee, description) or UNCLASSIFIED
+    if account_type in ("checking", "savings") and amount > 0:
+        # Deposits no rule names: interest by keyword, anything else is other income.
+        return classifier.category_for(payee, description, spending_only=False) or "income:other"
     return None
+
+
+def load_merchant_categories(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT merchant, category FROM merchant_categories")
+        return dict(cur.fetchall())
+
+
+def save_learned(conn, classifier):
+    """Persist what the keyword and model layers decided, never overwriting a manual entry."""
+    if not classifier.learned:
+        return 0
+    with conn.cursor() as cur:
+        for merchant, category, source in classifier.learned:
+            cur.execute(
+                "INSERT INTO merchant_categories (merchant, category, source) VALUES (%s, %s, %s) "
+                "ON CONFLICT (merchant) DO UPDATE SET category = EXCLUDED.category, source = EXCLUDED.source, "
+                "updated_at = now() WHERE merchant_categories.source <> 'manual'",
+                (merchant, category, source),
+            )
+    conn.commit()
+    count = len(classifier.learned)
+    classifier.learned = []
+    return count
+
+
+def apply_model(conn, classifier):
+    """Let the model place the merchants nothing else could, when a key is configured."""
+    api_key = setting("GEMINI_API_KEY")
+    if not api_key or not classifier.pending:
+        return {}
+    try:
+        answers = classifier.resolve_pending(api_key)
+    except Exception as error:  # noqa: BLE001  (a model outage must not fail the sync)
+        print(f"Model classification skipped: {error}", file=sys.stderr)
+        return {}
+    if answers:
+        with conn.cursor() as cur:
+            for merchant, category in answers.items():
+                cur.execute(
+                    "UPDATE transactions SET category = %s, updated_at = now() WHERE NOT category_manual "
+                    "AND category = %s AND lower(coalesce(nullif(raw->>'payee', ''), description)) = %s",
+                    (category, UNCLASSIFIED, merchant),
+                )
+        conn.commit()
+    return answers
 
 
 def upsert(conn, data):
     now = datetime.now(timezone.utc)
     rules = load_category_rules(conn)
     account_types = load_account_types(conn)
+    descriptions = [t.get("description") for a in data.get("accounts", []) for t in a.get("transactions", [])]
+    classifier = Classifier(load_merchant_categories(conn), descriptions)
     with conn.cursor() as cur:
         for account in data.get("accounts", []):
             balance_date = (
@@ -108,6 +178,8 @@ def upsert(conn, data):
                     rules,
                     account_type=account_types.get(account["id"]),
                     amount=txn["amount"],
+                    classifier=classifier,
+                    payee=txn.get("payee"),
                 )
                 cur.execute(
                     """
@@ -138,28 +210,42 @@ def upsert(conn, data):
                     ),
                 )
     conn.commit()
+    save_learned(conn, classifier)
+    placed = apply_model(conn, classifier)
+    save_learned(conn, classifier)
+    if placed:
+        print(f"Model placed {len(placed)} new merchants")
+    if classifier.pending:
+        print(f"{len(classifier.pending)} merchants still unclassified; run scripts/classify.py --review")
 
 
 def recategorize(conn):
-    """Re-run the rules over every stored transaction that was not tagged by hand.
+    """Re-run the rules and merchant layers over every stored transaction not tagged by hand.
 
-    The daily sync only re-fetches a two-week window, so a new rule, or an account whose
-    type was set after its transactions arrived, leaves older rows behind. Returns the
-    number of rows whose category changed.
+    The daily sync only re-fetches a two-week window, so a new rule, a new merchant group,
+    or an account whose type was set after its transactions arrived leaves older rows
+    behind. Returns the number of rows whose category changed.
     """
     rules = load_category_rules(conn)
     account_types = load_account_types(conn)
     changed = 0
     with conn.cursor() as cur:
-        cur.execute("SELECT id, account_id, description, amount, category FROM transactions WHERE NOT category_manual")
-        for txn_id, account_id, description, amount, current in cur.fetchall():
-            category = categorize(description, rules, account_types.get(account_id), amount)
+        cur.execute("SELECT description FROM transactions")
+        classifier = Classifier(load_merchant_categories(conn), [row[0] for row in cur.fetchall()])
+        cur.execute(
+            "SELECT id, account_id, description, amount, category, raw->>'payee' FROM transactions WHERE NOT category_manual"
+        )
+        for txn_id, account_id, description, amount, current, payee in cur.fetchall():
+            category = categorize(description, rules, account_types.get(account_id), amount, classifier, payee)
             if category is not None and category != current:
                 cur.execute(
                     "UPDATE transactions SET category = %s, updated_at = now() WHERE id = %s", (category, txn_id)
                 )
                 changed += 1
     conn.commit()
+    save_learned(conn, classifier)
+    changed += len(apply_model(conn, classifier))
+    save_learned(conn, classifier)
     return changed
 
 

@@ -23,7 +23,9 @@ def is_bill(txns):
 
 
 def is_spending(txns):
-    return txns["category"] == "spending:discretionary"
+    """Spending in any of its groups (spending:groceries, spending:dining, ...), from cards
+    or the bank account. Refunds carry the same group with a positive amount, so they net."""
+    return txns["category"].str.startswith("spending:", na=False)
 
 
 def is_transfer(txns):
@@ -57,7 +59,10 @@ def category_label(category):
     """'bill:debt_payment' -> 'Debt payment'."""
     if pd.isna(category) or ":" not in category:
         return "Uncategorized"
-    return category.split(":", 1)[1].replace("_", " ").capitalize()
+    label = category.split(":", 1)[1].replace("_", " ").capitalize()
+    return {"Discretionary": "Unclassified card spending", "Card fees": "Card fees", "Fast food": "Fast food"}.get(
+        label, label
+    )
 
 
 def days_counted(period, today):
