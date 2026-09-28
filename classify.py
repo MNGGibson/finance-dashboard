@@ -290,6 +290,13 @@ KEYWORDS = [
     ),
 ]
 
+# Words in the raw bank text that override the merchant's usual group: a warehouse club's
+# fuel pump is gas even though the bank names the payee "Sam's Club".
+DESCRIPTION_OVERRIDES = [
+    (("fuel", "gas station", "gas #", "gasoline"), "spending:gas"),
+    (("pharmacy",), "spending:health"),
+]
+
 DEFAULT = "spending:discretionary"  # unclassified card spending, until a layer above catches it
 MODEL = "gemini-flash-lite-latest"  # an alias Google keeps pointing at the current free Flash-Lite model
 
@@ -302,6 +309,14 @@ def merchant_key(payee, description, cities=frozenset()):
         name = merchant_name(description, cities)
     name = re.sub(r"^(aplpay|gglpay|apple pay|google pay)\s+", "", name, flags=re.I).strip()
     return re.sub(r"\s+", " ", name).lower()
+
+
+def description_override(description):
+    lowered = (description or "").lower()
+    for needles, category in DESCRIPTION_OVERRIDES:
+        if any(needle in lowered for needle in needles):
+            return category
+    return None
 
 
 def keyword_category(name):
@@ -359,6 +374,9 @@ class Classifier:
     def category_for(self, payee, description, spending_only=True):
         """The group for a merchant, or None. With spending_only=False (money arriving in a
         bank account) only the keyword layer applies: no merchant is learned or sent out."""
+        override = description_override(description)
+        if override:
+            return override
         name = merchant_key(payee, description, self.cities)
         if name in self.known:
             return self.known[name]

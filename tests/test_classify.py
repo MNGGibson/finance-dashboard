@@ -67,3 +67,10 @@ def test_bank_account_income_never_becomes_a_pending_merchant():
     c = classify.Classifier({}, [])
     assert c.category_for(None, "Zelle Payment from Someone", spending_only=False) is None
     assert c.pending == [] and c.learned == []
+
+
+def test_fuel_in_the_raw_text_beats_the_payee_group():
+    c = classify.Classifier({"sam's club": "spending:groceries"}, [])
+    assert c.category_for("Sam's Club", "SAM'S CLUB FUEL 8203MARIETTA GA") == "spending:gas"
+    assert c.category_for("Sam's Club", "SAM'S CLUB 8203 8203MARIETTA GA") == "spending:groceries"
+    assert c.category_for("Walmart", "WALMART PHARMACY 1181") == "spending:health"
