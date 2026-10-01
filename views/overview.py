@@ -6,13 +6,13 @@ lives in st.session_state under the keys named here so chart clicks can drive th
 """
 
 import html
-from datetime import date
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
 import ui
+from db import local_now, local_today
 from finance_data import cash_on_hand_for_month, load_accounts, load_balance_history, load_transactions
 from rules import (
     CASH_TYPES,
@@ -40,7 +40,7 @@ transactions = load_transactions(months=12)
 transactions["effective"] = effective_date(transactions)
 transactions["month"] = transactions["effective"].dt.to_period("M")
 transactions["label"] = transactions["category"].map(category_label)
-today = pd.Timestamp.today().normalize()
+today = local_today()
 
 # ---------- State ----------
 state = st.session_state
@@ -388,7 +388,7 @@ with accounts_col, st.container(border=True, key="card_accounts", height=CARD_HE
         for _, acct in group.sort_values("last_balance", ascending=False).iterrows():
             badge = ""
             if pd.notna(acct["promo_apr_expires"]):
-                days_left = (acct["promo_apr_expires"] - date.today()).days
+                days_left = (acct["promo_apr_expires"] - today.date()).days
                 if days_left >= 0:
                     badge = f'<span class="badge">0% APR ends in {days_left} days</span>'
             rows.append(
@@ -428,7 +428,7 @@ with st.container(border=True, key="card_transactions"):
     )
 
 last_sync = accounts["updated_at"].max()
-age_hours = (pd.Timestamp.now() - last_sync).total_seconds() / 3600
+age_hours = (local_now() - last_sync).total_seconds() / 3600
 freshness = f"Data as of {last_sync.strftime('%a %b %-d, %-I:%M %p')}"
 if age_hours > 12:
     freshness += f" ({age_hours:.0f} hours ago; the sync runs every 6 hours, so check the sync logs)"

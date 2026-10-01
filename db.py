@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import psycopg2
@@ -33,10 +34,40 @@ def setting(name, default=None):
     return default
 
 
-# Transactions are stored in UTC. The dashboard reasons in calendar days, so they are
-# converted to this zone before the date is read off. Defaults to the machine's zone,
-# which is UTC on cloud hosts, so set LOCAL_TZ there (for example America/New_York).
-LOCAL_TZ = setting("LOCAL_TZ") or datetime.now().astimezone().tzinfo
+def _system_zone():
+    """The machine's named time zone (so daylight saving is applied correctly), read from the
+    /etc/localtime link on macOS and Linux. A fixed UTC offset is the last resort: it would be
+    wrong for half the year and for any date on the other side of a clock change."""
+    try:
+        target = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in target:
+            return ZoneInfo(target.split("zoneinfo/", 1)[1])
+    except Exception:  # noqa: BLE001
+        pass
+    return datetime.now().astimezone().tzinfo
+
+
+# Transactions are stored in UTC, and the dashboard reasons in calendar days: both "which day did
+# this happen" and "what day is it now" are answered in this zone. A cloud host's clock is UTC, so
+# set LOCAL_TZ there (for example America/New_York), or the page rolls to tomorrow at 8 PM Eastern.
+LOCAL_TZ = setting("LOCAL_TZ") or _system_zone()
+
+
+def to_local(instant, zone=None):
+    """A UTC instant (naive means UTC) as a naive timestamp in `zone` (default LOCAL_TZ)."""
+    stamp = pd.Timestamp(instant)
+    stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+    return stamp.tz_convert(zone or LOCAL_TZ).tz_localize(None)
+
+
+def local_now(zone=None):
+    """The current local wall-clock time, naive. Use this, never pd.Timestamp.now() or date.today(),
+    which read the server's clock and so give UTC dates on a cloud host."""
+    return to_local(pd.Timestamp.now(tz="UTC"), zone)
+
+
+def local_today(zone=None):
+    return local_now(zone).normalize()
 
 
 def connection_kwargs():
