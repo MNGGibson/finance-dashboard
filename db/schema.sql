@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     category    TEXT,
     -- true when set by hand (scripts/set_category.py); the sync then leaves category alone
     category_manual BOOLEAN NOT NULL DEFAULT false,
+    -- rule | merchant | keyword | model | manual: which layer decided; model rows carry a note
+    category_source TEXT,
+    category_note   TEXT,
     raw         JSONB,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

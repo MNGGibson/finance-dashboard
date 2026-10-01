@@ -295,10 +295,41 @@ KEYWORDS = [
 DESCRIPTION_OVERRIDES = [
     (("fuel", "gas station", "gas #", "gasoline"), "spending:gas"),
     (("pharmacy",), "spending:health"),
+    # Fees and memberships hide behind the payee of the store that issued them ("Amazon", "Walmart").
+    (("plan fee", "renewal membership fee", "late fee", "interest charge"), "bill:card_fees"),
+    (("amazon prime", "walmart+", "club renewal", "annual renewal"), "spending:subscriptions"),
 ]
+
+
+def credit_wording(description):
+    """True for text that says a credit-card credit is a perk, reimbursement or statement credit."""
+    return bool(re.search(r"\b(credit|reimburse\w*|perk)\b", (description or "").lower()))
+
 
 DEFAULT = "spending:discretionary"  # unclassified card spending, until a layer above catches it
 MODEL = "gemini-flash-lite-latest"  # an alias Google keeps pointing at the current free Flash-Lite model
+# Tried in turn when a model answers 503 "high demand", which the free tier does now and then.
+MODEL_FALLBACKS = (MODEL, "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-latest")
+
+
+def _generate(prompt, api_key, model, timeout):
+    """One JSON answer from the first model in the fallback list that is not overloaded."""
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
+    }
+    models = [model] + [m for m in MODEL_FALLBACKS if m != model]
+    last_error = None
+    for candidate in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate}:generateContent"
+        # The key travels in a header, never in the URL, so it cannot appear in error messages or logs.
+        response = requests.post(url, headers={"x-goog-api-key": api_key}, json=body, timeout=timeout)
+        if response.status_code in (503, 429, 404):
+            last_error = requests.HTTPError(f"{response.status_code} from {candidate}", response=response)
+            continue
+        response.raise_for_status()
+        return json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
+    raise last_error
 
 
 def merchant_key(payee, description, cities=frozenset()):
@@ -339,15 +370,7 @@ def model_categories(names, api_key, model=MODEL, timeout=60):
         "Answer with a JSON object mapping each name to a group key.\n\nGroups:\n"
         f"{groups}\n\nMerchants:\n" + "\n".join(f"- {n}" for n in names)
     )
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
-    }
-    response = requests.post(url, params={"key": api_key}, json=body, timeout=timeout)
-    response.raise_for_status()
-    text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-    answers = json.loads(text)
+    answers = _generate(prompt, api_key, model, timeout)
     wanted = {n.lower(): n for n in names}
     result = {}
     for raw_name, category in answers.items():
@@ -378,13 +401,20 @@ class Classifier:
         if override:
             return override
         name = merchant_key(payee, description, self.cities)
-        if name in self.known:
+        # Memory is only consulted for money going out. A bank labels both directions of a Zelle
+        # payment with the same generic payee, so remembered spending must never claim a deposit.
+        if spending_only and name in self.known:
             return self.known[name]
-        category = keyword_category(name) or keyword_category(description or "")
+        category = keyword_category(name)
         if category:
             if spending_only:
                 self.known[name] = category
                 self.learned.append((name, category, "keyword"))
+            return category
+        # Evidence from this one row's raw text is used for this row and never remembered:
+        # the payee it carries may be shared with rows it does not describe.
+        category = keyword_category(description or "")
+        if category:
             return category
         if spending_only and name not in self.pending:
             self.pending.append(name)
@@ -400,3 +430,111 @@ class Classifier:
             self.learned.append((name, category, "model"))
         self.pending = [n for n in self.pending if n not in answers]
         return answers
+
+
+# ---------- Review: the model checks proposed groups against the raw evidence ----------
+REVIEW_BATCH = 60
+
+
+def _clean_for_review(description):
+    """Strip store and reference numbers so the model sees the words, not the noise."""
+    text = re.sub(r"#?\d[\d\-]{3,}", " ", description or "")
+    return re.sub(r"\s+", " ", text).strip()[:80]
+
+
+def review_categories(items, api_key, model=MODEL, timeout=90):
+    """Ask the model whether each proposed group fits its transaction.
+
+    `items` is a list of dicts with id, description, payee, amount (signed), account_type
+    and proposed. Returns {id: (category, reason)} for the items the model would change;
+    agreement is silence. Only the cleaned description, payee, rounded amount, account
+    kind and proposed group leave the machine. Raises on a transport error.
+    """
+    items = [i for i in items if i.get("proposed")]
+    if not items or not api_key:
+        return {}
+    groups = "\n".join(f"- {key}: {what}" for key, what in GROUPS.items())
+    extra = (
+        f"- {CARD_PAYMENT_RECEIVED}: the cardholder's own payment arriving on a credit card\n"
+        f"- {CARD_CREDIT}: statement credit, perk or fee reimbursement on a credit card\n"
+        f"- {INTEREST}: bank interest earned\n"
+        "- income:paycheck, income:other, bill:rent, bill:car_loan, bill:student_loan, bill:family, "
+        "bill:debt_payment (a payment to a credit card from a bank account), transfer:internal, "
+        "transfer:points_redemption: other groups that already exist and may be kept or chosen"
+    )
+    lines = []
+    for i in items:
+        kind = "credit card" if i.get("account_type") == "credit_card" else "bank account"
+        amount = float(i.get("amount") or 0)
+        direction = "charge" if amount < 0 else "credit/deposit"
+        lines.append(
+            f'{{"id": "{i["id"]}", "text": "{_clean_for_review(i.get("description"))}", '
+            f'"payee": "{(i.get("payee") or "")[:40]}", "amount": {abs(round(amount))}, '
+            f'"kind": "{kind} {direction}", "proposed": "{i["proposed"]}"}}'
+        )
+    prompt = (
+        "You audit how a personal finance app grouped transactions from a US bank and credit card feed. "
+        "The proposed groups came from generic merchant and keyword matching, so they can be wrong in "
+        "obvious ways. For each item, decide whether the proposed group is right given the text, payee, "
+        "amount and kind. "
+        "Think about what the merchant actually is: a warehouse club's fuel pump is gas, not groceries; "
+        "a pharmacy line at a supermarket is health; a restaurant chain is dining or fast food; "
+        "a positive amount on a credit card is a refund (keep the merchant's spending group so it nets), "
+        "a card payment received, or a statement credit. Bank-account debits paid to a person are Zelle payments; "
+        "payments to a credit card issuer are bill:debt_payment. Money arriving in a bank account is income or a "
+        "transfer, never spending. A refund of an ordinary purchase keeps its merchant's spending group. "
+        "Be conservative: only change a group when a "
+        "different one is clearly better, and never change a group merely because the evidence is thin; "
+        "if you cannot tell, leave it.\n\nGroups:\n"
+        f"{groups}\n{extra}\n\n"
+        'Answer with a JSON array of objects {"id": ..., "category": ..., "reason": ...} listing ONLY the items '
+        "you would change, with the reason in at most twelve words. Return [] if every proposed group is fine.\n\n"
+        "Items:\n" + "\n".join(lines)
+    )
+    answers = _generate(prompt, api_key, model, timeout)
+    if isinstance(answers, dict):
+        answers = answers.get("changes") or answers.get("items") or []
+    allowed = (
+        set(GROUPS)
+        | {CARD_PAYMENT_RECEIVED, CARD_CREDIT, INTEREST}
+        | {
+            "income:paycheck",
+            "income:other",
+            "bill:rent",
+            "bill:car_loan",
+            "bill:student_loan",
+            "bill:family",
+            "bill:debt_payment",
+            "transfer:internal",
+            "transfer:points_redemption",
+        }
+    )
+    by_id = {str(i["id"]): i for i in items}
+    result = {}
+    for answer in answers if isinstance(answers, list) else []:
+        if not isinstance(answer, dict):
+            continue
+        item = by_id.get(str(answer.get("id")))
+        category = answer.get("category")
+        if item and category in allowed and category != item["proposed"] and change_is_sane(item, category):
+            result[item["id"]] = (category, str(answer.get("reason") or "")[:120])
+    return result
+
+
+def change_is_sane(item, category):
+    """Hard limits on what the model may do, whatever it says: the sign of an amount and the
+    kind of account rule some groups out. Wrong answers here would break the dashboard's totals."""
+    amount = float(item.get("amount") or 0)
+    on_card = item.get("account_type") == "credit_card"
+    description = item.get("description") or ""
+    if amount < 0:
+        # A charge is never a refund, a card payment received, or income.
+        return not (category.startswith(("refund:", "income:")) or category == CARD_PAYMENT_RECEIVED)
+    if not on_card:
+        # Money arriving in a bank account is income or a transfer, never spending or a bill.
+        return not category.startswith(("spending:", "bill:"))
+    if item.get("proposed", "").startswith("spending:") and category in (CARD_CREDIT, CARD_PAYMENT_RECEIVED):
+        # A refund of an ordinary purchase keeps its merchant's group so it nets against the spending;
+        # only text that says credit, reimbursement or payment makes it something else.
+        return credit_wording(description) or "payment" in description.lower()
+    return True

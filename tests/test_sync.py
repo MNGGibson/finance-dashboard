@@ -47,3 +47,25 @@ def test_categorize_routes_card_credits_and_bank_debits():
     assert sync.categorize("Interest earned", [], "checking", 1.5, c, None) == classify.INTEREST
     assert sync.categorize("MYSTERY", [], "checking", -9.0, c, None) == classify.DEFAULT
     assert sync.categorize("Zelle Payment from Someone", [], "checking", 25.0, c, None) == "income:other"
+
+
+def test_card_perks_are_credits_whatever_store_issued_them():
+    c = classify.Classifier({"walmart": "spending:groceries"}, [])
+    assert sync.categorize("Platinum Walmart+ Credit", [], "credit_card", 12.95, c, "Walmart") == classify.CARD_CREDIT
+    assert sync.categorize("WALMART RETURN", [], "credit_card", 12.95, c, "Walmart") == "spending:groceries"
+
+
+def test_explicit_patterns_are_marked_override_so_the_model_leaves_them_alone():
+    c = classify.Classifier({"amazon": "spending:shopping"}, [])
+    assert sync.categorize_with_source("PLAN FEE - AMAZON.COM", [], "credit_card", -1.2, c, "Amazon") == (
+        "bill:card_fees",
+        "override",
+    )
+    assert sync.categorize_with_source("SAM'S CLUB FUEL 8203", [], "credit_card", -40.0, c, "Sam's Club") == (
+        "spending:gas",
+        "override",
+    )
+    assert sync.categorize_with_source("Zelle Payment from Someone", [], "checking", 25.0, c, "Zelle Transfer") == (
+        "income:other",
+        "default",
+    )
